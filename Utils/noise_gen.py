@@ -651,6 +651,155 @@ class PDENoiseGenerator1D:
         
         return correlated_noise
     
+
+    def gp_noise(self, batch_size, n_points, correlation_length=5.0, std=1.0, 
+                                 kernel_type='rbf', nu=1.5, seed=None):
+        """
+        Generate batched 1D spatially correlated noise using Gaussian Process sampling.
+        
+        This method uses GPyTorch to sample from a Gaussian Process with specified
+        covariance structure. This provides more flexible and theoretically principled
+        spatial correlations compared to convolution-based methods.
+        
+        Advantages over convolution method:
+        - Exact covariance structure (not approximate via convolution)
+        - Multiple kernel types available (RBF, Matérn, Periodic, etc.)
+        - Better theoretical foundation from Gaussian Process theory
+        - Naturally handles boundary conditions and non-uniform grids
+        - Can easily extend to more complex covariance functions
+        
+        Available kernel types:
+        - 'rbf': Radial Basis Function (Gaussian) kernel
+          k(x,x') = σ² exp(-|x-x'|²/(2l²))
+          Infinitely differentiable, very smooth samples
+          
+        - 'matern': Matérn kernel with parameter ν
+          k(x,x') = σ²(2^(1-ν)/Γ(ν))(√(2ν)|x-x'|/l)^ν K_ν(√(2ν)|x-x'|/l)
+          Controls smoothness: ν=0.5 (rough), ν=1.5 (medium), ν=2.5 (smooth)
+          
+        - 'periodic': Periodic kernel for cyclic domains
+          k(x,x') = σ² exp(-2sin²(π|x-x'|/p)/l²)
+          
+        Physical interpretation:
+        - RBF: Very smooth processes, good for temperature fields, smooth flows
+        - Matérn: More realistic for natural phenomena, finite smoothness
+        - Periodic: For processes with known periodicity
+        
+        Args:
+            batch_size: int, number of independent GP realizations
+                       Each batch samples independently from the same GP prior
+            n_points: int, number of spatial discretization points
+                     These will be the input locations for GP sampling
+            correlation_length: float, length scale of the covariance function
+                              Controls spatial correlation distance
+                              Larger values = smoother, more correlated samples
+            std: float, marginal standard deviation of the GP
+                Physical amplitude of fluctuations (σ in kernel formulas)
+            kernel_type: str, type of covariance kernel
+                        'rbf', 'matern', or 'periodic'
+            nu: float, smoothness parameter for Matérn kernel (ignored for other kernels)
+               Common values: 0.5 (Ornstein-Uhlenbeck), 1.5, 2.5, ∞ (RBF)
+            seed: int, random seed for reproducibility
+                 
+        Returns:
+            torch.Tensor: Shape [batch_size, n_points] of GP samples
+            
+        Notes:
+            - Requires GPyTorch installation: pip install gpytorch
+            - Each batch is an independent sample from the same GP prior
+            - Computational complexity: O(n_points³) for exact sampling
+            - For large n_points (>1000), consider approximate methods
+            - Covariance matrix is positive definite by construction
+            - Handles numerical stability via Cholesky decomposition
+            
+        Mathematical details:
+            - Samples f ~ GP(0, k(x,x')) where k is the chosen kernel
+            - Uses Cholesky decomposition: f = L @ z where z ~ N(0,I)
+            - L is Cholesky factor of covariance matrix K
+            - Ensures exact covariance structure (up to numerical precision)
+            
+        Example:
+            # Smooth RBF samples
+            noise_rbf = generator.spatially_correlated_noise(
+                16, 64, correlation_length=5.0, kernel_type='rbf'
+            )
+            
+            # Rougher Matérn samples  
+            noise_matern = generator.spatially_correlated_noise(
+                16, 64, correlation_length=5.0, kernel_type='matern', nu=0.5
+            )
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+            
+        try:
+            import gpytorch
+        except ImportError:
+            print("Warning: GPyTorch not available. Falling back to convolution method.")
+            return self._spatially_correlated_noise_fallback(batch_size, n_points, 
+                                                           correlation_length, std, seed)
+        
+        # Create input locations (spatial grid)
+        # Normalize to [0, 1] interval for better numerical stability
+        x_locations = torch.linspace(0, 1, n_points, device=self.device, dtype=self.dtype)
+        
+        # Create covariance kernel based on type
+        if kernel_type.lower() == 'rbf':
+            # RBF (Gaussian) kernel: k(x,x') = σ² exp(-|x-x'|²/(2l²))
+            covar_module = gpytorch.kernels.RBFKernel()
+            
+        elif kernel_type.lower() == 'matern':
+            # Matérn kernel with smoothness parameter nu
+            covar_module = gpytorch.kernels.MaternKernel(nu=nu)
+            
+        elif kernel_type.lower() == 'periodic':
+            # Periodic kernel for cyclic domains
+            covar_module = gpytorch.kernels.PeriodicKernel()
+            
+        else:
+            raise ValueError(f"Unknown kernel type: {kernel_type}. Use 'rbf', 'matern', or 'periodic'")
+        
+        # Set length scale to control correlation distance
+        # Convert correlation_length to appropriate scale for [0,1] domain
+        normalized_length_scale = correlation_length / n_points
+        covar_module.lengthscale = normalized_length_scale
+        
+        # Scale kernel output to desired standard deviation
+        scaled_covar_module = gpytorch.kernels.ScaleKernel(covar_module)
+        scaled_covar_module.outputscale = std**2
+        
+        # Compute covariance matrix
+        # Shape: [n_points, n_points]
+        # Need to provide both sets of inputs for cross-covariance
+        with torch.no_grad():
+            covar_matrix = scaled_covar_module(x_locations, x_locations).evaluate()
+        
+        # Add small diagonal term for numerical stability (jitter)
+        jitter = 1e-6
+        covar_matrix += jitter * torch.eye(n_points, device=self.device, dtype=self.dtype)
+        
+        # Cholesky decomposition for sampling: K = L @ L^T
+        try:
+            L = torch.linalg.cholesky(covar_matrix)
+        except RuntimeError as e:
+            print(f"Warning: Cholesky decomposition failed ({e}). Adding more jitter.")
+            jitter = 1e-4
+            covar_matrix += jitter * torch.eye(n_points, device=self.device, dtype=self.dtype)
+            L = torch.linalg.cholesky(covar_matrix)
+        
+        # Sample standard normal random variables
+        # Shape: [batch_size, n_points]
+        z = torch.randn(batch_size, n_points, device=self.device, dtype=self.dtype)
+        
+        # Transform to get GP samples: f = L @ z^T
+        # L: [n_points, n_points], z^T: [n_points, batch_size]
+        # Result: [n_points, batch_size] -> transpose to [batch_size, n_points]
+        gp_samples = (L @ z.T).T
+        
+        return gp_samples
+    
+
+    
     def mesh_scaled_noise(self, batch_size, n_points, dx=1.0, std=1.0, correlation_length=None, seed=None):
         """
         Generate batched mesh-scaled noise for numerical PDE convergence.

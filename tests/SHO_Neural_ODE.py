@@ -413,7 +413,8 @@ idx = 10
 pred = pos[idx:idx+1] #Doing this for a single prediction
 
 n_samples = 1000
-noise = noise_gen.spatially_correlated_noise(n_samples, n_points, correlation_length=3, std=0.01)
+# noise = noise_gen.spatially_correlated_noise(n_samples, n_points, correlation_length=3, std=0.01) #Gaussian Kernel
+noise = noise_gen.gp_noise(n_samples, n_points, correlation_length=3, std=0.01) #GP samples
 perturbed_pred = pred + noise 
 residual_perturbed_pred = D_pos(perturbed_pred)
 perturb_within_bounds = torch.abs(residual_perturbed_pred) <= torch.abs(torch.tensor(qhat))  # Shape: [n_samples, n_points]
