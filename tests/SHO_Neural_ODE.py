@@ -406,14 +406,14 @@ plt.grid(True)
 
 # %% 
 #Perturbed predictions. Do this for a single prediction first with 500 odd perturbed variations. 
-from Utils.noise_gen import PDENoiseGenerator
-noise_gen = PDENoiseGenerator()
+from Utils.noise_gen import PDENoiseGenerator1D
+noise_gen = PDENoiseGenerator1D()
 
 idx = 10
 pred = pos[idx:idx+1] #Doing this for a single prediction
 
 n_samples = 1000
-noise = noise_gen.spatially_correlated_noise((n_samples, n_points), correlation_length=3, std=0.01)
+noise = noise_gen.spatially_correlated_noise(n_samples, n_points, correlation_length=3, std=0.01)
 perturbed_pred = pred + noise 
 residual_perturbed_pred = D_pos(perturbed_pred)
 perturb_within_bounds = torch.abs(residual_perturbed_pred) <= torch.abs(torch.tensor(qhat))  # Shape: [n_samples, n_points]

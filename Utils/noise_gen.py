@@ -451,3 +451,403 @@ def demonstrate_noise_generation():
 # if __name__ == "__main__":
 #     results = demonstrate_noise_generation()
 # %%
+
+
+
+# %% 
+import torch
+import torch.nn.functional as F
+import numpy as np
+import matplotlib.pyplot as plt
+
+class PDENoiseGenerator1D:
+    """
+    A 1D noise generator for batched PDE simulations in PyTorch.
+    
+    This class generates noise with shape [batch_size, n_points] where:
+    - Each batch element is independent (no correlation across batch dimension)
+    - Spatial correlations exist within each 1D sequence (along n_points)
+    - Optimized for batched neural PDE solvers and parallel simulations
+    
+    Common applications:
+    - Neural operators processing multiple 1D PDEs simultaneously
+    - Monte Carlo simulations with many realizations
+    - Time series of spatial fields where each batch is a different time
+    - Parameter sweeps where each batch has different PDE parameters
+    """
+    
+    def __init__(self, device='cpu', dtype=torch.float32):
+        """
+        Initialize the 1D noise generator.
+        
+        Args:
+            device: str or torch.device, computation device ('cpu', 'cuda', etc.)
+            dtype: torch.dtype, data type for generated tensors
+        """
+        self.device = device
+        self.dtype = dtype
+    
+    def white_noise(self, batch_size, n_points, std=1.0, seed=None):
+        """
+        Generate batched 1D white noise.
+        
+        Creates independent white noise for each batch element and each spatial point.
+        White noise properties:
+        - Zero mean: E[ξ(x)] = 0
+        - Delta-correlated in space: E[ξ(x)ξ(y)] = σ²δ(x-y)
+        - Independent across batch: E[ξᵢ(x)ξⱼ(y)] = 0 for i ≠ j
+        - Gaussian distribution at each point
+        
+        This is the fundamental building block for stochastic PDEs of the form:
+        ∂u/∂t = F(u, ∂u/∂x, ∂²u/∂x², ...) + σξ(x,t)
+        
+        Args:
+            batch_size: int, number of independent noise realizations
+                       Each batch element represents a different:
+                       - PDE realization for Monte Carlo
+                       - Time snapshot in a sequence
+                       - Parameter configuration
+            n_points: int, number of spatial discretization points
+                     Should match the spatial resolution of your PDE grid
+            std: float, standard deviation of the noise (σ in mathematical notation)
+                The physical amplitude of fluctuations
+            seed: int, random seed for reproducibility
+                 Useful for debugging and comparing different methods
+                 
+        Returns:
+            torch.Tensor: Shape [batch_size, n_points] of independent white noise
+            
+        Notes:
+            - Each (batch, point) pair is independent
+            - Memory efficient - no correlations stored
+            - Scales linearly with batch_size and n_points
+            - Foundation for building more complex noise types
+            - Satisfies central limit theorem for ensemble averages
+            
+        Example:
+            # For neural operator training with 32 examples, 128 grid points
+            noise = generator.white_noise(32, 128, std=0.1)
+            
+            # Add to PDE solution: u_noisy = u_clean + noise
+            u_noisy = u_clean + noise
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+        
+        return torch.randn(batch_size, n_points, device=self.device, dtype=self.dtype) * std
+    
+    def spatially_correlated_noise(self, batch_size, n_points, correlation_length=5.0, std=1.0, seed=None):
+        """
+        Generate batched 1D spatially correlated noise using Gaussian kernel convolution.
+        
+        Creates noise with exponential spatial correlation within each batch element:
+        C(r) ∝ exp(-r²/(2L²)) where L is the correlation length
+        
+        Key properties:
+        - Spatial correlations within each 1D sequence (along n_points)
+        - No correlations across batch dimension (each batch independent)
+        - Preserves Gaussian statistics (convolution of Gaussians is Gaussian)
+        - Isotropic correlations in 1D (symmetric around each point)
+        
+        Method: 
+        1. Generate independent white noise for each batch
+        2. Apply 1D convolution with Gaussian kernel to each batch element
+        3. The convolution operates along the spatial dimension only
+        
+        Physical interpretation:
+        - Models measurement noise with finite instrument resolution
+        - Represents local averaging effects in physical systems
+        - Mimics diffusion-limited processes or finite-size effects
+        - Common in experimental data where sensors have spatial extent
+        
+        Applications:
+        - Smoothed initial conditions for PDE ensembles
+        - Measurement noise in inverse problems
+        - Subgrid-scale fluctuations in turbulence models
+        - Uncertainty quantification with correlated errors
+        
+        Args:
+            batch_size: int, number of independent noise realizations
+                       Each batch has its own independent spatial correlation pattern
+            n_points: int, number of spatial discretization points
+                     Determines the spatial resolution of correlations
+            correlation_length: float, spatial correlation length in grid units
+                              Controls the spatial smoothness scale
+                              - Small values (< 2): nearly white noise
+                              - Medium values (2-10): visible correlations
+                              - Large values (> n_points/4): very smooth
+            std: float, noise amplitude after normalization
+                Physical amplitude of the correlated fluctuations
+            seed: int, random seed for reproducibility
+                 
+        Returns:
+            torch.Tensor: Shape [batch_size, n_points] of spatially correlated noise
+            
+        Notes:
+            - Uses conv1d for computational efficiency
+            - Kernel size automatically chosen based on correlation length
+            - Proper padding maintains spatial dimension size
+            - Each batch element has independent but statistically identical correlations
+            - Computational cost scales with correlation length
+            - For very large correlation lengths, consider spectral methods instead
+            
+        Implementation details:
+            - Gaussian kernel: G(x) = exp(-x²/(2σ²)) where σ = correlation_length/2
+            - Kernel size: 4σ captures ~99.99% of Gaussian mass
+            - Normalization preserves total noise power
+            - Padding='same' maintains n_points dimension
+            
+        Example:
+            # Generate smooth noise for 16 PDE realizations, 64 grid points
+            # with correlation length of 3 grid spacings
+            noise = generator.spatially_correlated_noise(16, 64, 
+                                                       correlation_length=3.0, 
+                                                       std=0.05)
+            
+            # Each row is an independent correlated noise realization
+            assert noise.shape == (16, 64)
+            
+            # Verify independence across batches
+            correlation_across_batches = torch.corrcoef(noise)  # Should be ~identity
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+            
+        # Generate independent white noise for each batch element
+        # Shape: [batch_size, 1, n_points] for conv1d (needs channel dimension)
+        white_noise = torch.randn(batch_size, 1, n_points, device=self.device, dtype=self.dtype)
+        
+        # Create 1D Gaussian kernel for convolution
+        # Kernel size: 4σ covers ~99.99% of Gaussian mass, ensure odd size
+        kernel_size = max(3, int(4 * correlation_length) // 2 * 2 + 1)
+        sigma = correlation_length / 2.0  # Convert correlation length to Gaussian σ
+        
+        # Create 1D Gaussian kernel: G(x) = exp(-x²/(2σ²))
+        x = torch.arange(kernel_size, device=self.device, dtype=self.dtype)
+        x = x - kernel_size // 2  # Center the kernel around zero
+        kernel = torch.exp(-x**2 / (2 * sigma**2))
+        
+        # Normalize kernel to preserve noise amplitude
+        # This ensures that convolution doesn't change the total power
+        kernel = kernel / torch.sum(kernel)
+        
+        # Reshape kernel for conv1d: [out_channels, in_channels, kernel_size]
+        # We want: [1, 1, kernel_size] for single channel convolution
+        kernel = kernel.unsqueeze(0).unsqueeze(0)
+        
+        # Apply 1D convolution with padding to maintain spatial dimensions
+        # Each batch element is convolved independently
+        padding = kernel_size // 2
+        correlated_noise = F.conv1d(white_noise, kernel, padding=padding)
+        
+        # Remove channel dimension: [batch_size, 1, n_points] → [batch_size, n_points]
+        correlated_noise = correlated_noise.squeeze(1)
+        
+        # Normalize to desired standard deviation
+        # Convolution can change amplitude, so we renormalize to maintain std
+        current_std = torch.std(correlated_noise)
+        if current_std > 1e-10:  # Avoid division by zero
+            correlated_noise = correlated_noise * std / current_std
+        
+        return correlated_noise
+    
+    def mesh_scaled_noise(self, batch_size, n_points, dx=1.0, std=1.0, correlation_length=None, seed=None):
+        """
+        Generate batched mesh-scaled noise for numerical PDE convergence.
+        
+        In numerical PDEs, noise must be scaled with mesh size to ensure:
+        1. Convergence as mesh is refined (dx → 0)
+        2. Correct physical units and amplitude
+        3. Proper weak/strong convergence for stochastic PDEs
+        
+        For white noise in 1D, proper scaling is:
+        ξ_discrete = ξ_continuous / sqrt(dx)
+        
+        For correlated noise, the scaling depends on whether the correlation
+        length is fixed in physical units or grid units.
+        
+        Args:
+            batch_size: int, number of independent noise realizations
+            n_points: int, number of spatial discretization points
+            dx: float, mesh spacing in physical units
+               Should match the spacing used in your PDE discretization
+            std: float, physical noise amplitude (before mesh scaling)
+                This should be the amplitude you want in continuous units
+            correlation_length: float, optional, if provided generates correlated noise
+                               If None, generates white noise
+                               Can be in grid units or physical units (specify clearly)
+            seed: int, random seed for reproducibility
+                 
+        Returns:
+            torch.Tensor: Shape [batch_size, n_points] of properly scaled noise
+            
+        Notes:
+            - Critical for convergence studies and multi-resolution simulations
+            - Factor scales as 1/sqrt(dx) in 1D
+            - For correlation_length in physical units: keep fixed as dx changes
+            - For correlation_length in grid units: scale with mesh refinement
+        """
+        # Scale noise amplitude with mesh size for proper discretization
+        mesh_factor = 1.0 / torch.sqrt(torch.tensor(dx, device=self.device))
+        effective_std = std * mesh_factor
+        
+        if correlation_length is None:
+            # Generate mesh-scaled white noise
+            return self.white_noise(batch_size, n_points, std=effective_std, seed=seed)
+        else:
+            # Generate mesh-scaled correlated noise
+            return self.spatially_correlated_noise(batch_size, n_points, 
+                                                 correlation_length=correlation_length, 
+                                                 std=effective_std, seed=seed)
+
+# # Example usage and demonstration
+# def demonstrate_1d_noise_generation():
+#     """
+#     Comprehensive demonstration of 1D batched noise generation methods.
+    
+#     Shows typical use cases for neural PDE solvers and batched simulations.
+#     """
+#     # Initialize generator
+#     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+#     noise_gen = PDENoiseGenerator1D(device=device)
+    
+#     # Typical parameters for neural operator training
+#     batch_size = 16    # Number of training examples or Monte Carlo realizations
+#     n_points = 128     # Spatial resolution (e.g., 128 grid points)
+#     dx = 0.1          # Physical mesh spacing
+    
+#     print(f"Using device: {device}")
+#     print(f"Batch size: {batch_size}, Grid points: {n_points}, dx: {dx}")
+    
+#     # Generate different types of 1D batched noise
+#     print("\nGenerating 1D batched noise types...")
+    
+#     # 1. Basic white noise - independent at each point and batch
+#     white_noise = noise_gen.white_noise(batch_size, n_points, std=1.0, seed=42)
+#     print(f"✓ White noise generated: shape {white_noise.shape}")
+    
+#     # 2. Spatially correlated noise - smooth within each batch, independent across batches
+#     corr_noise = noise_gen.spatially_correlated_noise(batch_size, n_points, 
+#                                                      correlation_length=5.0, std=1.0, seed=42)
+#     print(f"✓ Spatially correlated noise generated: shape {corr_noise.shape}")
+    
+#     # 3. Mesh-scaled white noise - proper for convergence studies
+#     mesh_white = noise_gen.mesh_scaled_noise(batch_size, n_points, dx=dx, std=0.1, seed=42)
+#     print(f"✓ Mesh-scaled white noise generated: shape {mesh_white.shape}")
+    
+#     # 4. Mesh-scaled correlated noise
+#     mesh_corr = noise_gen.mesh_scaled_noise(batch_size, n_points, dx=dx, std=0.1, 
+#                                           correlation_length=3.0, seed=42)
+#     print(f"✓ Mesh-scaled correlated noise generated: shape {mesh_corr.shape}")
+    
+#     # Verification: Check independence across batches
+#     print("\nVerifying statistical properties...")
+    
+#     # Check that batches are independent (correlation should be near zero)
+#     if batch_size > 1:
+#         batch_correlation = torch.corrcoef(white_noise)
+#         off_diagonal = batch_correlation[torch.triu(torch.ones_like(batch_correlation), diagonal=1) == 1]
+#         mean_cross_corr = torch.mean(torch.abs(off_diagonal))
+#         print(f"Mean cross-batch correlation (should be ~0): {mean_cross_corr:.4f}")
+    
+#     # Check spatial correlations within batches
+#     if n_points > 10:
+#         # Compute spatial autocorrelation for first batch element
+#         first_batch = corr_noise[0]  # Shape: [n_points]
+#         # Simple lag-1 correlation
+#         lag1_corr = torch.corrcoef(torch.stack([first_batch[:-1], first_batch[1:]]))[0,1]
+#         print(f"Spatial lag-1 correlation in correlated noise: {lag1_corr:.4f}")
+        
+#         # Same for white noise (should be much smaller)
+#         first_batch_white = white_noise[0]
+#         lag1_corr_white = torch.corrcoef(torch.stack([first_batch_white[:-1], first_batch_white[1:]]))[0,1]
+#         print(f"Spatial lag-1 correlation in white noise: {lag1_corr_white:.4f}")
+    
+#     # Example: Using with a simple 1D PDE solution
+#     print("\nExample: Adding noise to 1D PDE solutions...")
+    
+#     # Create a batch of 1D solutions (e.g., sine waves with different frequencies)
+#     x = torch.linspace(0, 2*np.pi, n_points, device=device)
+#     frequencies = torch.linspace(1, 3, batch_size, device=device).unsqueeze(1)  # [batch_size, 1]
+#     clean_solutions = torch.sin(frequencies * x)  # [batch_size, n_points]
+    
+#     # Add different types of noise
+#     noisy_white = clean_solutions + 0.1 * white_noise
+#     noisy_corr = clean_solutions + 0.1 * corr_noise
+    
+#     print(f"✓ Noise added to {batch_size} different 1D PDE solutions")
+#     print(f"  Clean solutions shape: {clean_solutions.shape}")
+#     print(f"  Noisy solutions shape: {noisy_white.shape}")
+    
+#     # Return results for potential visualization or further analysis
+#     return {
+#         'white_noise': white_noise.cpu(),
+#         'corr_noise': corr_noise.cpu(),
+#         'mesh_white': mesh_white.cpu(),
+#         'mesh_corr': mesh_corr.cpu(),
+#         'clean_solutions': clean_solutions.cpu(),
+#         'noisy_white': noisy_white.cpu(),
+#         'noisy_corr': noisy_corr.cpu(),
+#         'x_grid': x.cpu(),
+#         'frequencies': frequencies.cpu()
+#     }
+
+# if __name__ == "__main__":
+#     results = demonstrate_1d_noise_generation()
+    
+#     # Optional: Quick visualization if matplotlib is available
+#     try:
+#         import matplotlib.pyplot as plt
+        
+#         print("\nCreating sample visualization...")
+#         fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        
+#         # Plot first few batch elements
+#         n_show = min(4, results['white_noise'].shape[0])
+        
+#         # Convert all tensors to numpy for matplotlib compatibility
+#         x_np = results['x_grid'].numpy()
+#         white_noise_np = results['white_noise'][:n_show].numpy()
+#         corr_noise_np = results['corr_noise'][:n_show].numpy()
+#         clean_solutions_np = results['clean_solutions'][:n_show].numpy()
+#         noisy_corr_np = results['noisy_corr'][:n_show].numpy()
+        
+#         # White noise
+#         axes[0,0].plot(x_np, white_noise_np.T)
+#         axes[0,0].set_title('White Noise (first 4 batches)')
+#         axes[0,0].set_xlabel('x')
+#         axes[0,0].set_ylabel('ξ(x)')
+#         axes[0,0].grid(True, alpha=0.3)
+        
+#         # Correlated noise  
+#         axes[0,1].plot(x_np, corr_noise_np.T)
+#         axes[0,1].set_title('Spatially Correlated Noise')
+#         axes[0,1].set_xlabel('x')
+#         axes[0,1].set_ylabel('ξ(x)')
+#         axes[0,1].grid(True, alpha=0.3)
+        
+#         # Clean solutions
+#         axes[1,0].plot(x_np, clean_solutions_np.T)
+#         axes[1,0].set_title('Clean PDE Solutions')
+#         axes[1,0].set_xlabel('x')
+#         axes[1,0].set_ylabel('u(x)')
+#         axes[1,0].grid(True, alpha=0.3)
+        
+#         # Noisy solutions
+#         axes[1,1].plot(x_np, noisy_corr_np.T)
+#         axes[1,1].set_title('Noisy PDE Solutions')
+#         axes[1,1].set_xlabel('x')
+#         axes[1,1].set_ylabel('u(x) + ξ(x)')
+#         axes[1,1].grid(True, alpha=0.3)
+        
+#         plt.tight_layout()
+#         plt.savefig('1d_noise_demo.png', dpi=150, bbox_inches='tight')
+#         print("✓ Visualization saved as '1d_noise_demo.png'")
+        
+#     except ImportError:
+#         print("Matplotlib not available for visualization")
+#     except Exception as e:
+#         print(f"Visualization failed: {e}")
+#         print("This is likely due to tensor/numpy conversion issues")
+
+# # %%
