@@ -652,6 +652,60 @@ class PDENoiseGenerator1D:
         return correlated_noise
     
 
+    def pre_correlated_noise(self, batch_size, n_points, kernel, std=1.0, seed=None):
+        """
+        Generate batched 1D spatially correlated noise using the PRE kernel
+        
+        
+        Args:
+            batch_size: int, number of independent noise realizations
+                       Each batch has its own independent spatial correlation pattern
+            n_points: int, number of spatial discretization points
+                     Determines the spatial resolution of correlations
+            kernel: Additive PRE Kernel. 
+
+            std: float, noise amplitude after normalization
+                Physical amplitude of the correlated fluctuations
+            seed: int, random seed for reproducibility
+                 
+        Returns:
+            torch.Tensor: Shape [batch_size, n_points] of spatially correlated noise
+            
+        
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+            
+        # Generate independent white noise for each batch element
+        # Shape: [batch_size, 1, n_points] for conv1d (needs channel dimension)
+        white_noise = torch.randn(batch_size, 1, n_points, device=self.device, dtype=self.dtype)
+        
+        
+        
+        # Reshape kernel for conv1d: [out_channels, in_channels, kernel_size]
+        # We want: [1, 1, kernel_size] for single channel convolution
+        kernel = kernel.unsqueeze(0).unsqueeze(0)
+        kernel_size = kernel.shape[-1]
+        
+        # Apply 1D convolution with padding to maintain spatial dimensions
+        # Each batch element is convolved independently
+        padding = kernel_size // 2
+        correlated_noise = F.conv1d(white_noise, kernel, padding=padding)
+        
+        # Remove channel dimension: [batch_size, 1, n_points] → [batch_size, n_points]
+        correlated_noise = correlated_noise.squeeze(1)
+        
+        # Normalize to desired standard deviation
+        # Convolution can change amplitude, so we renormalize to maintain std
+        current_std = torch.std(correlated_noise)
+        if current_std > 1e-10:  # Avoid division by zero
+            correlated_noise = correlated_noise * std / current_std
+        
+        return correlated_noise
+    
+
+
+
     def gp_noise(self, batch_size, n_points, correlation_length=5.0, std=1.0, 
                                  kernel_type='rbf', nu=1.5, seed=None):
         """
