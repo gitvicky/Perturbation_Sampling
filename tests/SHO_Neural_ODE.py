@@ -402,7 +402,7 @@ plt.plot(t[1:-1], -qhat[1:-1], 'r--', label='Lower Bound')
 plt.plot(t[1:-1], +qhat[1:-1], 'g--', label='Upper Bound')
 plt.xlabel('Time')
 plt.ylabel('Residual')
-plt.title('CP-PRE : Position')
+plt.title('Marginal CP-PRE : Position')
 plt.legend()
 plt.grid(True)
 
@@ -462,4 +462,72 @@ plt.title(r'$\alpha =  $' +  str(alpha))
 # But we increase the number of samples it becomes smoother but across alpha there is a variation in smoothness 
 #However it seems that the width of the bound (or its general trend) remains the same 
 
+# %%
+# # Joint - CP 
+
+modulation = modulation_func(residual_cal.numpy(), np.zeros(residual_cal.shape))
+ncf_scores = ncf_metric_joint(residual_cal.numpy(), np.zeros(residual_cal.shape), modulation)
+alpha = 0.1
+qhat = calibrate(scores=ncf_scores, n=len(ncf_scores), alpha=alpha)
+prediction_sets =  [- qhat*modulation, + qhat*modulation]
+
+
+plt.plot(t[1:-1], residual_pred[0, 1:-1], 'b-', label='PRE')
+plt.plot(t[1:-1], -qhat*modulation[1:-1], 'r--', label='Lower Bound')
+plt.plot(t[1:-1], +qhat*modulation[1:-1], 'g--', label='Upper Bound')
+plt.xlabel('Time')
+plt.ylabel('Residual')
+plt.title('Joint CP-PRE : Position')
+plt.legend()
+plt.grid(True)
+
+
+# %%
+#Inverse Bounds with Joint CP Bounds
+idx = 10
+pred = pos[idx:idx+1] #Doing this for a single prediction
+
+n_samples = 1000
+# noise = noise_gen.spatially_correlated_noise(n_samples, n_points, correlation_length=32, std=0.1) #Gaussian Kernel
+noise = noise_gen.gp_noise(n_samples, n_points, correlation_length=32, std=0.1) #GP samples
+perturbed_pred = pred + noise 
+residual_perturbed_pred = D_pos(perturbed_pred)
+perturb_within_bounds = torch.abs(residual_perturbed_pred) <= torch.abs(torch.tensor(qhat*modulation))  # Shape: [n_samples, n_points]
+
+#Computing the mean and std dev. from the predictions within the bounds. 
+
+n_samples, n_points = perturbed_pred.shape
+valid_time_indices = range(1, n_points-1)
+
+pred_slice = perturbed_pred[:, valid_time_indices]
+mask_slice = perturb_within_bounds[:, valid_time_indices]
+mask_float = mask_slice.float()
+
+# Coverage and count
+coverage = mask_float.mean(dim=0) #Within the residual space
+n_valid = mask_slice.sum(dim=0).float() #Points within the residual bounds.
+
+# Means
+masked_pred = pred_slice * mask_float
+mean = masked_pred.sum(dim=0) / (n_valid + 1e-8)
+
+# Vectorized std computation
+# Compute squared differences from mean
+diff_sq = (pred_slice - mean.unsqueeze(0)) ** 2  # Broadcasting
+masked_diff_sq = diff_sq * mask_float
+
+# Compute variance and std
+variance = masked_diff_sq.sum(dim=0) / (n_valid + 1e-8)
+std = torch.sqrt(variance)
+
+# Handle cases where n_valid <= 1
+std = torch.where(n_valid <= 1, torch.zeros_like(std), std)
+
+plt.figure()
+plt.plot(valid_time_indices, numerical_sol[idx, 1:-1, 0], c='black', label='soln.', lw=0.5)
+plt.plot(valid_time_indices, pred[0, 1:-1], c='red', label='pred.', lw=0.5)
+plt.plot(valid_time_indices, mean, label='mean', lw=0.5)
+plt.fill_between(valid_time_indices, mean - 2*std, mean + 2*std,  alpha=0.3, label='±2σ', color='orange')
+plt.legend()
+plt.title(r'$\alpha =  $' +  str(alpha))
 # %%
