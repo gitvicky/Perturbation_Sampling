@@ -392,8 +392,10 @@ residual_pred = res[100:]
 
 ncf_scores = np.abs(residual_cal) 
 
+# %%
 #Plotting the bounds in the residual space
-qhat = calibrate(scores=ncf_scores, n=len(ncf_scores), alpha=0.1)
+alpha = 0.1
+qhat = calibrate(scores=ncf_scores, n=len(ncf_scores), alpha=alpha)
 
 plt.plot(t[1:-1], residual_pred[0, 1:-1], 'b-', label='PRE')
 plt.plot(t[1:-1], -qhat[1:-1], 'r--', label='Lower Bound')
@@ -413,8 +415,8 @@ idx = 10
 pred = pos[idx:idx+1] #Doing this for a single prediction
 
 n_samples = 1000
-# noise = noise_gen.spatially_correlated_noise(n_samples, n_points, correlation_length=3, std=0.01) #Gaussian Kernel
-noise = noise_gen.gp_noise(n_samples, n_points, correlation_length=3, std=0.01) #GP samples
+# noise = noise_gen.spatially_correlated_noise(n_samples, n_points, correlation_length=32, std=0.1) #Gaussian Kernel
+noise = noise_gen.gp_noise(n_samples, n_points, correlation_length=32, std=0.1) #GP samples
 perturbed_pred = pred + noise 
 residual_perturbed_pred = D_pos(perturbed_pred)
 perturb_within_bounds = torch.abs(residual_perturbed_pred) <= torch.abs(torch.tensor(qhat))  # Shape: [n_samples, n_points]
@@ -449,7 +451,15 @@ std = torch.sqrt(variance)
 std = torch.where(n_valid <= 1, torch.zeros_like(std), std)
 
 plt.figure()
+plt.plot(valid_time_indices, numerical_sol[idx, 1:-1, 0], c='black', label='soln.', lw=0.5)
+plt.plot(valid_time_indices, pred[0, 1:-1], c='red', label='pred.', lw=0.5)
 plt.plot(valid_time_indices, mean, label='mean', lw=0.5)
 plt.fill_between(valid_time_indices, mean - 2*std, mean + 2*std,  alpha=0.3, label='±2σ', color='orange')
 plt.legend()
+plt.title(r'$\alpha =  $' +  str(alpha))
+# %%
+#Experimenting with different alpha values: The bounds become more erratic and discontinuous as we increase the alpha value 
+# But we increase the number of samples it becomes smoother but across alpha there is a variation in smoothness 
+#However it seems that the width of the bound (or its general trend) remains the same 
+
 # %%
