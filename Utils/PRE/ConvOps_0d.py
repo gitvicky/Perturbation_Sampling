@@ -14,9 +14,13 @@ https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=8721631
 fftconv takes care of this automatically, within diff and integrate its an argument
 that allows us to choose between a convolution and a correlation. 
 """
+# %%
+import sys 
+sys.path.append("..")
 import torch
 import torch.nn.functional as F
-from fft_conv_pytorch.fft_conv import * 
+from torch_fftconv import fft_conv1d
+# from fft_conv_pytorch import *
 
 def get_stencil(deriv_order, taylor_order=2):
     """
@@ -125,7 +129,7 @@ class ConvOperator():
         if field.dim() == 2:
             field = field.unsqueeze(1)
         kernel = self.kernel.unsqueeze(0).unsqueeze(0)
-        convfft = fft_conv(field, kernel, padding=self.kernel.shape[-1]//2).squeeze(1)
+        convfft = fft_conv1d(field, kernel, padding=self.kernel.shape[-1]//2).squeeze(1)
 
         return convfft
 
@@ -165,7 +169,7 @@ class ConvOperator():
         if correlation==True:
             kernel_fft.imag *= -1
 
-        output = irfftn(field_fft * kernel_fft, dim=tuple(range(2, field.ndim)))
+        output = torch.fft.irfftn(field_fft * kernel_fft, dim=tuple(range(2, field.ndim)))
 
         # Remove extra padded values
         if slice_pad==True:
@@ -219,7 +223,7 @@ class ConvOperator():
         if correlation == True:
             inv_kernel_fft.imag *= -1 
 
-        output = irfftn(field_fft * inv_kernel_fft, dim=tuple(range(2, field.ndim)))
+        output = torch.fft.irfftn(field_fft * inv_kernel_fft, dim=tuple(range(2, field.ndim)))
 
         # Remove extra padded values
         if slice_pad==True:
@@ -257,7 +261,7 @@ class ConvOperator():
         return self.forward(inputs)
     
 
-# %% 
+# #%% 
 # #Example Usage 
 # from matplotlib import pyplot as plt 
 
@@ -275,7 +279,7 @@ class ConvOperator():
 # plt.figure()
 # plt.plot(fftconv[0], label='spectral')
 # plt.plot(directconv[0], label='direct')
-# plt.plot(mine[0], label='mine')
+# # plt.plot(mine[0], label='mine')
 # plt.legend()
 
 # # %% 

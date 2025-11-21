@@ -7,6 +7,8 @@ Vector Operations implemented using the ConvOps Class
 Data used for all operations should be in the shape: BS, Nt, Nx, Ny
 """
 # %%
+import sys
+sys.path.append("..")
 from ConvOps_2d import *
 
 #############################################  

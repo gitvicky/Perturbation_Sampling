@@ -9,11 +9,13 @@ Wrapper for Implementing Convolutional Operator as the Differential and Integral
 Data used for all operations should be in the shape: BS, Nt, Nx, Ny
 """
 # %% 
+import sys
+sys.path.append("..")
 import numpy as np 
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F
-from fft_conv_pytorch.fft_conv import * 
+from torch_fftconv import fft_conv3d
 
 def get_stencil(dims, deriv_order, taylor_order=2):
     if dims == 1:
@@ -172,7 +174,7 @@ class ConvOperator():
             field = field.unsqueeze(1)
 
         kernel = self.kernel.unsqueeze(0).unsqueeze(0)
-        convfft = fft_conv(field, kernel, padding=(self.kernel.shape[0]//2, self.kernel.shape[1]//2, self.kernel.shape[2]//2), inverse=inverse)
+        convfft = fft_conv3d(field, kernel, padding=(self.kernel.shape[0]//2, self.kernel.shape[1]//2, self.kernel.shape[2]//2))#, inverse=inverse)
 
         return convfft.squeeze(1)
 
@@ -313,8 +315,8 @@ class ConvOperator():
         outputs = self.forward(inputs)
         return outputs
 
-# %% 
-#Example Usage
+# # %% 
+# # Example Usage
 
 # import torch
 # from matplotlib import pyplot as plt
@@ -346,4 +348,4 @@ class ConvOperator():
 # plt.imshow(integ[0, 1] - signal[0, 1])
 # plt.colorbar()
 
-# %%
+# # %%

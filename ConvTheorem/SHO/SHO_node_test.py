@@ -20,8 +20,9 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import sys
-sys.path.append("/Users/Vicky/Documents/UKAEA/Code/Uncertainty_Quantification/PDE_Residuals")
-from Utils import ConvOps_1d
+sys.path.append("..")
+sys.path.append("../..")
+from Utils.PRE import ConvOps_1d
 # %% 
 from scipy.integrate import solve_ivp
 
@@ -330,7 +331,7 @@ x = torch.tensor(soln[:, 0], dtype=torch.float32).unsqueeze(0)
 v = torch.tensor(soln[:, 1], dtype=torch.float32).unsqueeze(0)
 
 
-from Utils.ConvOps_0d import ConvOperator
+from Utils.PRE.ConvOps_0d import ConvOperator
 dt = t[1]-t[0]
 D_t = ConvOperator(order=1)#, scale=alpha)
 D_tt = ConvOperator(order=2)#, scale=alpha)

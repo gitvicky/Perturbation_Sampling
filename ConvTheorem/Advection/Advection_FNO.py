@@ -152,7 +152,7 @@ lb = np.asarray([0.5, 50]) #pos, amplitude
 ub = np.asarray([1.0, 200])
 
 #Conv kernels --> Stencils 
-from Utils.ConvOps_1d import ConvOperator
+from Utils.PRE.ConvOps_1d import ConvOperator
 #Defining the required Convolutional Operations. 
 D_t = ConvOperator(domain='t', order=1)#, scale=alpha)
 D_x = ConvOperator(domain='x', order=1)#, scale=beta) 
@@ -176,7 +176,7 @@ test_a, test_u = data_loader(u_sol, dataloader=False, shuffle=False)
 test_mse = []
 
 #Initialising the model
-model = FNO_multi1d(T_in, step, modes, num_vars, width, width_vars=0)
+model = FNO_multi1d_time(T_in, step, modes, num_vars, width, width_vars=0)
 model.to(device)
 print("Number of model params : " + str(model.count_params()))
 

@@ -8,10 +8,14 @@ Wrapper for Implementing Convolutional Operator as the Differential and Integral
 
 Data used for all operations should be in the shape: BS, Nt, Nx
 """
+# %%
+import sys
+sys.path.append("..")
 import numpy as np 
 import torch 
 import torch.nn.functional as F
-from fft_conv_pytorch.fft_conv import * 
+# from fft_conv_pytorch.fft_conv import * 
+from torch_fftconv import fft_conv2d
 
 
 def get_stencil(dims, deriv_order, taylor_order=2):
@@ -170,7 +174,7 @@ class ConvOperator():
         if field.dim() == 3:
             field = field.unsqueeze(1)
         kernel = self.kernel.unsqueeze(0).unsqueeze(0)
-        convfft = fft_conv(field, kernel, padding=(self.kernel.shape[0]//2, self.kernel.shape[1]//2)).squeeze(1)
+        convfft = fft_conv2d(field, kernel, padding=(self.kernel.shape[0]//2, self.kernel.shape[1]//2)).squeeze(1)
 
         return convfft
     
@@ -212,7 +216,7 @@ class ConvOperator():
         if correlation == True:
             kernel_fft.imag *= -1
 
-        output = irfftn(field_fft * kernel_fft, dim=tuple(range(2, field.ndim)))
+        output = torch.fft.irfftn(field_fft * kernel_fft, dim=tuple(range(2, field.ndim)))
         
         # Remove extra padded values
         if slice_pad == True:
@@ -269,7 +273,7 @@ class ConvOperator():
         if correlation == True:
             inv_kernel_fft.imag *= -1 
 
-        output = irfftn(field_fft * inv_kernel_fft, dim=tuple(range(2, field.ndim)))
+        output = torch.fft.irfftn(field_fft * inv_kernel_fft, dim=tuple(range(2, field.ndim)))
 
             # Remove extra padded values
         if slice_pad == True:
@@ -308,25 +312,25 @@ class ConvOperator():
         """
         return self.forward(inputs)
 
-# %% 
-#Example Usage
-import torch 
-from matplotlib import pyplot as plt 
+# # %% 
+# #Example Usage
+# import torch 
+# from matplotlib import pyplot as plt 
 
-def convection_solution(initial_condition, c, dt, nt):
-    """
-    Implementation of convection equation with analytical solution u(x,t) = f(x - ct)
+# def convection_solution(initial_condition, c, dt, nt):
+#     """
+#     Implementation of convection equation with analytical solution u(x,t) = f(x - ct)
     
-    Args:
-        initial_condition: Tensor of shape [1, 1, Nx] containing the initial condition
-        c: Convection velocity (scalar)
-        dt: Time step
-        nt: Number of time steps
+#     Args:
+#         initial_condition: Tensor of shape [1, 1, Nx] containing the initial condition
+#         c: Convection velocity (scalar)
+#         dt: Time step
+#         nt: Number of time steps
     
-    Returns:
-        Tensor of shape [1, Nt, Nx] containing the solution
-    """
-    return torch.cat([initial_condition(torch.arange(initial_condition.shape[2]).unsqueeze(0) - c * i * dt) for i in range(nt)], dim=1)
+#     Returns:
+#         Tensor of shape [1, Nt, Nx] containing the solution
+#     """
+#     return torch.cat([initial_condition(torch.arange(initial_condition.shape[2]).unsqueeze(0) - c * i * dt) for i in range(nt)], dim=1)
 
 
 # # Define parameters
@@ -371,8 +375,8 @@ def convection_solution(initial_condition, c, dt, nt):
 # res = dx*D_t(uu) + dt * uu * D_x(uu) - 0.001 / np.pi * D_xx(uu) * (2*dt/dx)
 # # %%
 
-# %%
-#Combined Equation
+# # %%
+# # Combined Equation
 
 
 # D_t = ConvOperator(domain='t', order=1)
@@ -382,3 +386,5 @@ def convection_solution(initial_condition, c, dt, nt):
 
 # # ce_residual = D_t(u) + alpha*D_x(u**2) - beta*D_xx(u) + gamma*D_xxx(u) 
 # ce_residual = D_t(u)*2*dx**3 + alpha*D_x(u**2)*2*dt*dx**2 - beta*D_xx(u)*4*dt*dx + gamma*D_xxx(u)*4*dt 
+
+# %%

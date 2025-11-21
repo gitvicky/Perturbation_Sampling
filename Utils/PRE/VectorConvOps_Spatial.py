@@ -9,6 +9,8 @@ Data used for all operations should be in the shape: BS, Nvar, Nx, Ny
 Make sure BS and Nvar are present
 """
 # %%
+import sys
+sys.path.append("..")
 from PRE.ConvOps_Spatial import *
 from PRE.boundary_conditions import * 
 
