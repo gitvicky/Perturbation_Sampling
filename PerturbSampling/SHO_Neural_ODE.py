@@ -302,30 +302,30 @@ def plot_comparison(t, numerical_sol, neural_sol):
     plt.tight_layout()
     plt.show()
 
-# %% 
-# #Executions 
-# # Initialize system
-# m, k = 1.0, 1.0 
-# oscillator = HarmonicOscillator(k, m)
+#%% 
+#Executions 
+# Initialize system
+m, k = 1.0, 1.0 
+oscillator = HarmonicOscillator(k, m)
 
-# # Generate training data
-# t_span = (0, 10)
-# n_points = 100
-# n_trajectories = 50
-# t, states, derivs = generate_training_data(
-#     oscillator, t_span, n_points, n_trajectories)
+# Generate training data
+t_span = (0, 10)
+n_points = 100
+n_trajectories = 50
+t, states, derivs = generate_training_data(
+    oscillator, t_span, n_points, n_trajectories)
 
-# # Initialize and train neural ODE
-# func = ODEFunc(hidden_dim=64)
-# losses = train_neural_ode(
-#     func, t, states, derivs, n_epochs=1000, batch_size=16)
+# Initialize and train neural ODE
+func = ODEFunc(hidden_dim=64)
+losses = train_neural_ode(
+    func, t, states, derivs, n_epochs=1000, batch_size=16)
 
-# # Compare solutions
-# initial_state = np.array([1.0, 0.0])  # x0 = 1, v0 = 0
-# t, numerical_sol, neural_sol = compare_solutions(
-#     oscillator, func, t_span, initial_state)
+# Compare solutions
+initial_state = np.array([1.0, 0.0])  # x0 = 1, v0 = 0
+t, numerical_sol, neural_sol = compare_solutions(
+    oscillator, func, t_span, initial_state)
 
-# # Plot results
-# plot_comparison(t, numerical_sol, neural_sol)
+# Plot results
+plot_comparison(t, numerical_sol, neural_sol)
 
 # %% 

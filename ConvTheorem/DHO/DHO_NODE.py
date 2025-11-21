@@ -21,8 +21,9 @@ from scipy.integrate import solve_ivp
 
 # Import your ConvOps module
 import sys
-sys.path.append("/Users/Vicky/Documents/UKAEA/Code/Uncertainty_Quantification/PDE_Residuals")
-from Utils.ConvOps_0d import ConvOperator
+sys.path.append("..")
+sys.path.append("../..")
+from Utils.PRE.ConvOps_0d import ConvOperator
 
 
 class DampedHarmonicOscillator:
