@@ -1,0 +1,5 @@
+torch
+neuraloperator
+torchdiffeq
+tqdm
+torch-fftconv
