@@ -36,3 +36,5 @@ Data/
 *.h5
 
 
+*.pyc
+*.DS_Store
