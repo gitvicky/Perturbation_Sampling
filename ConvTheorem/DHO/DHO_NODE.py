@@ -304,10 +304,10 @@ def plot_comparison(t, numerical_sol, neural_sol, damping_type=""):
     ax1.set_ylabel('Position')
     ax1.legend()
     ax1.grid(True)
-    if damping_type:
-        ax1.set_title(f'Position vs Time ({damping_type})')
-    else:
-        ax1.set_title('Position vs Time')
+    # if damping_type:
+        # ax1.set_title(f'Position vs Time ({damping_type})')
+    # else:
+        # ax1.set_title('Position vs Time')
     
     # Velocity plot
     ax2.plot(t, numerical_sol[:, 1], 'b-', label='Numerical')
@@ -316,13 +316,13 @@ def plot_comparison(t, numerical_sol, neural_sol, damping_type=""):
     ax2.set_ylabel('Velocity')
     ax2.legend()
     ax2.grid(True)
-    if damping_type:
-        ax2.set_title(f'Velocity vs Time ({damping_type})')
-    else:
-        ax2.set_title('Velocity vs Time')
+    # if damping_type:
+        # ax2.set_title(f'Velocity vs Time ({damping_type})')
+    # else:
+        # ax2.set_title('Velocity vs Time')
     
     plt.tight_layout()
-    plt.show()
+        # plt.show()
 
 
 def plot_phase_space(numerical_sol, neural_sol, damping_type=""):
@@ -334,20 +334,20 @@ def plot_phase_space(numerical_sol, neural_sol, damping_type=""):
         neural_sol (np.ndarray): Neural ODE solution
         damping_type (str): Type of damping for the title
     """
-    plt.figure(figsize=(8, 6))
-    plt.plot(numerical_sol[:, 0], numerical_sol[:, 1], 'b-', label='Numerical')
-    plt.plot(neural_sol[:, 0], neural_sol[:, 1], 'r--', label='Neural ODE')
-    plt.xlabel('Position')
-    plt.ylabel('Velocity')
-    if damping_type:
-        plt.title(f'Phase Space Trajectory ({damping_type})')
-    else:
-        plt.title('Phase Space Trajectory')
-    plt.legend()
-    plt.grid(True)
+        # plt.figure(figsize=(8, 6))
+        # plt.plot(numerical_sol[:, 0], numerical_sol[:, 1], 'b-', label='Numerical')
+        # plt.plot(neural_sol[:, 0], neural_sol[:, 1], 'r--', label='Neural ODE')
+        # plt.xlabel('Position')
+        # plt.ylabel('Velocity')
+    # if damping_type:
+        # plt.title(f'Phase Space Trajectory ({damping_type})')
+    # else:
+        # plt.title('Phase Space Trajectory')
+        # plt.legend()
+        # plt.grid(True)
     plt.axhline(y=0, color='k', linestyle='-', alpha=0.3)
     plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
-    plt.show()
+        # plt.show()
 
 
 def analyze_residuals(t, neural_sol, m, c, k):
@@ -427,32 +427,32 @@ if __name__ == "__main__":
             oscillator, func, t_span, initial_state)
         
         # Plot results
-        plot_comparison(t, numerical_sol, neural_sol, oscillator.damping_type)
-        plot_phase_space(numerical_sol, neural_sol, oscillator.damping_type)
+        # plot_comparison(t, numerical_sol, neural_sol, oscillator.damping_type)
+        # plot_phase_space(numerical_sol, neural_sol, oscillator.damping_type)
         
         # Analyze residuals
         residuals, pos_res, pos_retrieved = analyze_residuals(t, neural_sol, m, c, k)
         
         # Plot residuals
-        plt.figure(figsize=(10, 6))
-        plt.plot(t[1:-1], residuals[0, 1:-1], 'b-', label='Position Residual')
-        plt.xlabel('Time')
-        plt.ylabel('Residual')
-        plt.title(f'Position Residual ({oscillator.damping_type})')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(t[1:-1], residuals[0, 1:-1], 'b-', label='Position Residual')
+        # plt.xlabel('Time')
+        # plt.ylabel('Residual')
+        # plt.title(f'Position Residual ({oscillator.damping_type})')
+        # plt.legend()
+        # plt.grid(True)
+        # plt.show()
         
         # Plot retrieved vs actual position
-        plt.figure(figsize=(10, 6))
-        plt.plot(t, neural_sol[:, 0], 'b-', label='Actual')
-        plt.plot(t, pos_retrieved[0, 1:-1], 'r--', label='Retrieved')
-        plt.xlabel('Time')
-        plt.ylabel('Position')
-        plt.title(f'Position: Actual vs Retrieved ({oscillator.damping_type})')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(t, neural_sol[:, 0], 'b-', label='Actual')
+        # plt.plot(t, pos_retrieved[0, 1:-1], 'r--', label='Retrieved')
+        # plt.xlabel('Time')
+        # plt.ylabel('Position')
+        # plt.title(f'Position: Actual vs Retrieved ({oscillator.damping_type})')
+        # plt.legend()
+        # plt.grid(True)
+        # plt.show()
         
         # Evaluate on multiple initial conditions
         print("\nEvaluating on multiple initial conditions...")
@@ -460,138 +460,138 @@ if __name__ == "__main__":
             oscillator, func, t_span, n_points, x_range=(-2, 2), v_range=(-2, 2), n_solves=5)
             
         # Save results
-        np.save(f"DHO_numerical_outputs_{int(c*10)}", num_solns)
-        np.save(f"DHO_neural_outputs_{int(c*10)}", neural_solns)
+        # np.save(f"DHO_numerical_outputs_{int(c*10)}", num_solns)
+        # np.save(f"DHO_neural_outputs_{int(c*10)}", neural_solns)
         
         print(f"Completed analysis for {name}")
 
-# %% 
-#further analysis 
-dt = t[1] - t[0]
-# Extract position and velocity
-x = torch.tensor(neural_sol[:, 0], dtype=torch.float32).unsqueeze(0)
-v = torch.tensor(neural_sol[:, 1], dtype=torch.float32).unsqueeze(0)
-
-# Initialize operators
-D_t = ConvOperator(order=1)
-D_tt = ConvOperator(order=2)
-D_identity = ConvOperator(order=0)
-D_identity.kernel = torch.tensor([0.0, 1.0, 0.0])
-
-# Create damped operator: m*D_tt + c*D_t + k*identity
-D_damped = ConvOperator(conv='spectral')
-D_damped.kernel = 2*m*D_tt.kernel + dt*c*D_t.kernel + 2*dt**2*k*D_identity.kernel
-
-# Calculate residuals
-residuals = D_damped(x)
-
-# Retrieve position through integration
-pos_res = D_damped.differentiate(x, correlation=True, slice_pad=False)
-pos_retrieved = D_damped.integrate(pos_res, correlation=True, slice_pad=False)
-
-
-#Position Residual 
-plt.figure()
-plt.plot(t[1:-1], D_damped.convolution(x)[0,1:-1], 'b-', label='direct_residual')
-plt.plot(t[1:-1], D_damped(x)[0,1:-1], 'r--', label='spectral_residual')
-plt.plot(t[1:-1], D_damped.differentiate(x, correlation=True)[0, 1:-1], 'k:', label='custom_spectral')
-
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Position Residual')
-plt.legend()
-plt.grid(True)
-
-# %%
-#Exploring the multivariate use cases where you will split the residual based on which variable R = R1 + R2 
-x = torch.tensor(neural_sol[:, 0], dtype=torch.float32).unsqueeze(0)
-v = torch.tensor(neural_sol[:, 1], dtype=torch.float32).unsqueeze(0)
-
-D_R1 = ConvOperator()#v
-D_R1.kernel = m*D_t.kernel + 2*dt*c*D_identity.kernel
-
-D_R2 = ConvOperator()#x
-D_R2.kernel =  2*dt*k*D_identity.kernel
-
-residuals_r1r2 = D_R1.differentiate(v, correlation=True) + D_R2.differentiate(x, correlation=True)
-
-plt.figure()
-plt.plot(t[1:-1], D_damped.differentiate(x, correlation=True)[0, 1:-1], 'k:', label='combined residuals')
-plt.plot(t[1:-1], residuals_r1r2[0, 1:-1], 'r--', label='split residuals')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Split Residual')
-plt.legend()
-plt.grid(True)
-# %%
-
-plt.figure()
-plt.plot(t[1:-1], D_t(x)[0, 1:-1], 'k:', label='x_deriv')
-plt.plot(t[1:-1], dt*2*v[0, 1:-1], 'r--', label='velocity')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Extracting velocity from x')
-plt.legend()
-plt.grid(True)
-# %%
-#Velocity 
-inverse_r1 =  D_R1.integrate(D_R1.differentiate(v, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
-plt.figure()
-plt.plot(t[1:-1], v[0, 1:-1], 'k:', label='velocity')
-plt.plot(t[1:-1], inverse_r1[0, 2:-2], 'r--', label='split inverse')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Split Inverse - velocity ')
-plt.legend()
-plt.grid(True)
-
-#Position
-inverse_r2 =  D_R2.integrate(D_R2.differentiate(x, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
-plt.figure()
-plt.plot(t[1:-1], x[0, 1:-1], 'k:', label='position')
-plt.plot(t[1:-1], inverse_r2[0, 2:-2], 'r--', label='split inverse')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Split Inverse - position')
-plt.legend()
-plt.grid(True)
-# %%
-
-D_R3 = ConvOperator()#x
-D_R3.kernel = D_t.kernel 
-
-D_R4 = ConvOperator()#v
-D_R4.kernel =  2*dt*D_identity.kernel
-
-residuals_r3r4 = - D_R4.differentiate(v, correlation=True) + D_R3.differentiate(x, correlation=True)
-
-plt.figure()
-plt.plot(t[1:-1], residuals_r3r4[0, 1:-1], 'r--', label='split residuals')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Split Residual - velocity')
-plt.legend()
-plt.grid(True)
-# %%
-#Velocity 
-inverse_r1 =  D_R4.integrate(D_R4.differentiate(v, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
-plt.figure()
-plt.plot(t[1:-1], v[0, 1:-1], 'k:', label='velocity')
-plt.plot(t[1:-1], inverse_r1[0, 2:-2], 'r--', label='split inverse')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Split Inverse - velocity ')
-plt.legend()
-plt.grid(True)
-
-#Position
-inverse_r2 =  D_R4.integrate(D_R4.differentiate(x, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
-plt.figure()
-plt.plot(t[1:-1], x[0, 1:-1], 'k:', label='position')
-plt.plot(t[1:-1], inverse_r2[0, 2:-2], 'r--', label='split inverse')
-plt.xlabel('Time')
-plt.ylabel('Residual')
-plt.title('Split Inverse - position')
-plt.legend()
-plt.grid(True)
-# %%
+# # %% 
+# #further analysis 
+# dt = t[1] - t[0]
+# # Extract position and velocity
+# x = torch.tensor(neural_sol[:, 0], dtype=torch.float32).unsqueeze(0)
+# v = torch.tensor(neural_sol[:, 1], dtype=torch.float32).unsqueeze(0)
+# 
+# # Initialize operators
+# D_t = ConvOperator(order=1)
+# D_tt = ConvOperator(order=2)
+# D_identity = ConvOperator(order=0)
+# D_identity.kernel = torch.tensor([0.0, 1.0, 0.0])
+# 
+# # Create damped operator: m*D_tt + c*D_t + k*identity
+# D_damped = ConvOperator(conv='spectral')
+# D_damped.kernel = 2*m*D_tt.kernel + dt*c*D_t.kernel + 2*dt**2*k*D_identity.kernel
+# 
+# # Calculate residuals
+# residuals = D_damped(x)
+# 
+# # Retrieve position through integration
+# pos_res = D_damped.differentiate(x, correlation=True, slice_pad=False)
+# pos_retrieved = D_damped.integrate(pos_res, correlation=True, slice_pad=False)
+# 
+# 
+# #Position Residual 
+# plt.figure()
+# plt.plot(t[1:-1], D_damped.convolution(x)[0,1:-1], 'b-', label='direct_residual')
+# plt.plot(t[1:-1], D_damped(x)[0,1:-1], 'r--', label='spectral_residual')
+# plt.plot(t[1:-1], D_damped.differentiate(x, correlation=True)[0, 1:-1], 'k:', label='custom_spectral')
+# 
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Position Residual')
+# plt.legend()
+# plt.grid(True)
+# 
+# # %%
+# #Exploring the multivariate use cases where you will split the residual based on which variable R = R1 + R2 
+# x = torch.tensor(neural_sol[:, 0], dtype=torch.float32).unsqueeze(0)
+# v = torch.tensor(neural_sol[:, 1], dtype=torch.float32).unsqueeze(0)
+# 
+# D_R1 = ConvOperator()#v
+# D_R1.kernel = m*D_t.kernel + 2*dt*c*D_identity.kernel
+# 
+# D_R2 = ConvOperator()#x
+# D_R2.kernel =  2*dt*k*D_identity.kernel
+# 
+# residuals_r1r2 = D_R1.differentiate(v, correlation=True) + D_R2.differentiate(x, correlation=True)
+# 
+# plt.figure()
+# plt.plot(t[1:-1], D_damped.differentiate(x, correlation=True)[0, 1:-1], 'k:', label='combined residuals')
+# plt.plot(t[1:-1], residuals_r1r2[0, 1:-1], 'r--', label='split residuals')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Split Residual')
+# plt.legend()
+# plt.grid(True)
+# # %%
+# 
+# plt.figure()
+# plt.plot(t[1:-1], D_t(x)[0, 1:-1], 'k:', label='x_deriv')
+# plt.plot(t[1:-1], dt*2*v[0, 1:-1], 'r--', label='velocity')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Extracting velocity from x')
+# plt.legend()
+# plt.grid(True)
+# # %%
+# #Velocity 
+# inverse_r1 =  D_R1.integrate(D_R1.differentiate(v, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
+# plt.figure()
+# plt.plot(t[1:-1], v[0, 1:-1], 'k:', label='velocity')
+# plt.plot(t[1:-1], inverse_r1[0, 2:-2], 'r--', label='split inverse')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Split Inverse - velocity ')
+# plt.legend()
+# plt.grid(True)
+# 
+# #Position
+# inverse_r2 =  D_R2.integrate(D_R2.differentiate(x, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
+# plt.figure()
+# plt.plot(t[1:-1], x[0, 1:-1], 'k:', label='position')
+# plt.plot(t[1:-1], inverse_r2[0, 2:-2], 'r--', label='split inverse')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Split Inverse - position')
+# plt.legend()
+# plt.grid(True)
+# # %%
+# 
+# D_R3 = ConvOperator()#x
+# D_R3.kernel = D_t.kernel 
+# 
+# D_R4 = ConvOperator()#v
+# D_R4.kernel =  2*dt*D_identity.kernel
+# 
+# residuals_r3r4 = - D_R4.differentiate(v, correlation=True) + D_R3.differentiate(x, correlation=True)
+# 
+# plt.figure()
+# plt.plot(t[1:-1], residuals_r3r4[0, 1:-1], 'r--', label='split residuals')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Split Residual - velocity')
+# plt.legend()
+# plt.grid(True)
+# # %%
+# #Velocity 
+# inverse_r1 =  D_R4.integrate(D_R4.differentiate(v, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
+# plt.figure()
+# plt.plot(t[1:-1], v[0, 1:-1], 'k:', label='velocity')
+# plt.plot(t[1:-1], inverse_r1[0, 2:-2], 'r--', label='split inverse')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Split Inverse - velocity ')
+# plt.legend()
+# plt.grid(True)
+# 
+# #Position
+# inverse_r2 =  D_R4.integrate(D_R4.differentiate(x, correlation=True, slice_pad=False), correlation=True, slice_pad=True)
+# plt.figure()
+# plt.plot(t[1:-1], x[0, 1:-1], 'k:', label='position')
+# plt.plot(t[1:-1], inverse_r2[0, 2:-2], 'r--', label='split inverse')
+# plt.xlabel('Time')
+# plt.ylabel('Residual')
+# plt.title('Split Inverse - position')
+# plt.legend()
+# plt.grid(True)
+# # %%

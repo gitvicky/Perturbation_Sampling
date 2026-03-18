@@ -1,0 +1,96 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+
+\title{Inverting Physics-Informed Uncertainty Bounds:\\A Set Propagation Approach via Interval FFT}
+\author{ResidualBound Inversion Project}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We propose a methodology to invert conformal prediction bounds from the physics residual space back to the physical state-space in Neural PDE solvers. While standard point-wise inversion through the frequency domain provides approximate uncertainty bounds, it fails to preserve strict mathematical guarantees due to complex phase shifts. To address this, we introduce a set propagation technique using an Interval Fast Fourier Transform (Interval FFT) operating over Zonotopes. This ensures that the volumetric uncertainty in the residual space is rigorously bounded in the physical domain. We validate our approach on Simple and Damped Harmonic Oscillators.
+\end{abstract}
+
+\section{Introduction}
+Physics-Informed Neural Networks and Neural Operators have emerged as powerful surrogate models for solving differential equations. However, estimating their predictive uncertainty remains a challenge. In prior work, we utilized the Physics Residual Error (PRE) as a non-conformity score for Conformal Prediction (CP), successfully bounding the model error within the residual space. To make these bounds actionable, they must be mapped back to the physical space. In this work, we compare a baseline point-wise inversion strategy against a rigorous set propagation method using Interval FFT.
+
+\section{Methodology}
+
+\subsection{Problem Formulation}
+Consider a physical system governed by a differential equation represented by a linear differential operator $\mathcal{D}$. Let $u$ be the physical field and $\hat{u}$ be the prediction of a neural surrogate model. The physics residual $R$ is given by:
+\begin{equation}
+    R = \mathcal{D}(\hat{u}) \approx \hat{u} * k
+\end{equation}
+where $k$ is the convolution kernel corresponding to the finite difference approximation of $\mathcal{D}$. 
+
+Using Conformal Prediction on a calibration set of residuals, we obtain a probabilistically guaranteed bound $\hat{q}$ such that the true residual lies within $[R - \hat{q}, R + \hat{q}]$ with probability $1 - \alpha$. Our objective is to find a corresponding bound $[\underline{u}, \overline{u}]$ in the physical space.
+
+\subsection{Point-wise Bound Inversion (Approximate)}
+By the Convolution Theorem, the residual evaluation can be inverted in the Fourier domain. Let $\mathcal{F}$ denote the discrete Fourier transform (DFT). The physical field correction can theoretically be extracted by:
+\begin{equation}
+    u = \mathcal{F}^{-1}\left( \frac{\mathcal{F}(R)}{\mathcal{F}(k) + \epsilon} \right)
+\end{equation}
+where $\epsilon$ is a small regularisation constant to prevent division by zero.
+
+In the point-wise approach, we attempt to invert the bound by directly propagating the scalar bound magnitude $\hat{q}$:
+\begin{equation}
+    \Delta u_{approx} = \left| \mathcal{F}^{-1}\left( \frac{\mathcal{F}(\hat{q})}{\mathcal{F}(k) + \epsilon} \right) \right|
+\end{equation}
+The approximate physical bounds are then constructed as $\hat{u} \pm \Delta u_{approx}$. However, standard DFT is a linear combination of complex sinusoids. Evaluating the inverse transform on the boundary values point-wise does not mathematically guarantee that intermediate trajectory variations will be contained within the resulting physical envelope. Phase shifts and negative oscillatory modes inherent to the Fourier components can cause the true error to leak outside $\Delta u_{approx}$.
+
+\subsection{Set Propagation via Interval FFT (Guaranteed)}
+To construct mathematically guaranteed bounds, we must treat the bounded residual not as independent points, but as a continuous \textit{Set}. We define the residual prediction at each time-step $t$ as an interval:
+\begin{equation}
+    \mathbf{R}_t = [R_t - \hat{q}, R_t + \hat{q}]
+\end{equation}
+To propagate these intervals through the inverse operator, we implement an \textbf{Interval Fast Fourier Transform (Interval FFT)}.
+
+\paragraph{Zonotope Representation:} Computations involving complex intervals suffer from severe overestimation bounds (the dependency problem). To mitigate this, we represent the bounded sets as \textit{Zonotopes} in the complex plane (2D space of real and imaginary components). A zonotope $\mathcal{Z} \subset \mathbb{R}^2$ is parameterized by a center $c \in \mathbb{R}^2$ and a set of generator vectors $G \in \mathbb{R}^{2 \times m}$:
+\begin{equation}
+    \mathcal{Z} = \left\{ c + \sum_{i=1}^m \beta_i g_i \;\middle|\; \beta_i \in [-1, 1] \right\}
+\end{equation}
+
+\paragraph{Interval FFT Algorithm:} The forward Interval FFT is computed over the sequence of interval sets $\mathbf{R}$. For each frequency index $h$, the algorithm calculates the Minkowski sum of the rotated zonotopes:
+\begin{equation}
+    \mathcal{Z}_h = \bigoplus_{j=0}^{N-1} M\left(e^{-i \frac{2\pi}{N} h j}\right) \mathbf{R}_j
+\end{equation}
+where $M(\cdot)$ is the linear map applying the complex rotation to the zonotope generators.
+
+\paragraph{Inverse Filtering:} The frequency-domain zonotopes are then scaled by the inverse of the regularised kernel $\mathcal{F}(k) + \epsilon$ using complex interval arithmetic:
+\begin{equation}
+    \hat{\mathcal{Z}}_h = \mathcal{Z}_h \cdot \left(\frac{1}{\mathcal{F}(k)_h + \epsilon}\right)
+\end{equation}
+Finally, the inverse Interval FFT is applied to $\hat{\mathcal{Z}}_h$ to recover the sequence of guaranteed bounds $[\underline{u}, \overline{u}]$ in the physical time-domain. Because interval arithmetic strictly bounds the absolute minimal and maximal possible values during every addition and complex multiplication, the resulting physical bounds represent a mathematically guaranteed, worst-case envelope.
+
+\section{Experiments and Results}
+We evaluated the two inversion methods on two synthetic datasets generated from Neural Ordinary Differential Equations (Neural ODEs): the Simple Harmonic Oscillator (SHO) and the Damped Harmonic Oscillator (DHO).
+
+The bounds derived from the point-wise inverse FFT (red dashed lines) and the Interval FFT (grey shaded region) are visualized in Figure~\ref{fig:sho} and Figure~\ref{fig:dho}.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/sho_bounds_comparison.png}
+    \caption{Physical bounds via PRE inversion for the Simple Harmonic Oscillator ($m \ddot{x} + k x = 0$). The Interval FFT (grey) produces a wider, guaranteed envelope compared to the approximate point-wise inversion (red dotted).}
+    \label{fig:sho}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/dho_bounds_comparison.png}
+    \caption{Physical bounds via PRE inversion for the Damped Harmonic Oscillator ($m \ddot{x} + c \dot{x} + k x = 0$). The Interval FFT securely encapsulates boundary edge-effects and phase variations.}
+    \label{fig:dho}
+\end{figure}
+
+The point-wise bounds display an optimistically narrow width that theoretically fails to guarantee complete containment of worst-case oscillatory deviations. In contrast, the Interval FFT set propagation correctly identifies a wider band, formally accounting for complex phase transformations and preserving the $1 - \alpha$ coverage guarantees mapped from the residual space.
+
+\section{Conclusion}
+We have introduced a mathematically rigorous framework for inverting conformal prediction bounds from the residual space to the physical space using Interval FFT and Zonotopes. While the True Interval FFT bounds are inherently wider due to the conservative nature of interval arithmetic, they provide a safe, mathematically guaranteed calibration strategy for physical uncertainty quantification, overcoming the structural leakages of standard point-wise inversion.
+
+\end{document}

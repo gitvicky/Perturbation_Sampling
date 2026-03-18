@@ -1,7 +1,8 @@
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
-from zonopy import interval, zonotope
+from interval import interval
+from zonotope import Zonotope as zonotope
 import sys
 
 # Add the current directory to the path to import our modules
@@ -65,8 +66,8 @@ def test_with_synthetic_data():
     signal_bounds_back = signal_bounds[1:-1]
     
     # Check if solutions are within bounds
-    is_numerical_in = all(numerical_test[i, 0] in signal_bounds_back[i] for i in range(len(numerical_test)))
-    is_neural_in = all(neural_test[i, 0] in signal_bounds_back[i] for i in range(len(neural_test)))
+    is_numerical_in = all(float(signal_bounds_back[i][0].inf) <= numerical_test[i, 0] <= float(signal_bounds_back[i][0].sup) for i in range(len(numerical_test)))
+    is_neural_in = all(float(signal_bounds_back[i][0].inf) <= neural_test[i, 0] <= float(signal_bounds_back[i][0].sup) for i in range(len(neural_test)))
     
     print(f"Numerical solution contained within bounds: {is_numerical_in}")
     print(f"Neural solution contained within bounds: {is_neural_in}")
@@ -81,8 +82,8 @@ def test_with_synthetic_data():
     plt.plot(t, numerical_test[:, 0], 'r--', label='Numerical solution')
     
     # Plot bounds
-    upper_bounds = [float(interval_obj.sup) for interval_obj in signal_bounds_back]
-    lower_bounds = [float(interval_obj.inf) for interval_obj in signal_bounds_back]
+    upper_bounds = [float(interval_obj[0].sup) for interval_obj in signal_bounds_back]
+    lower_bounds = [float(interval_obj[0].inf) for interval_obj in signal_bounds_back]
     plt.fill_between(t[1:], lower_bounds, upper_bounds, color='gray', alpha=0.3, label='PRE bounds')
     
     plt.title('PRE Set Bounds Demonstration with Synthetic Data')
