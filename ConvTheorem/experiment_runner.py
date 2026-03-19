@@ -7,6 +7,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ConvTheorem.SHO.SHO_node_test import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
 from ConvTheorem.DHO.DHO_NODE import DampedHarmonicOscillator
+from ConvTheorem.Bessel.Bessel_NODE import run_bessel
+from ConvTheorem.Cauchy_Euler.Cauchy_Euler_NODE import run_cauchy_euler
 from ConvTheorem.Advection.Advection_PRE import run_advection_pre
 from Utils.PRE.ConvOps_0d import ConvOperator
 from ConvTheorem.inversion.residual_inversion import (
@@ -262,4 +264,7 @@ def run_dho():
 if __name__ == '__main__':
     run_sho()
     run_dho()
+    run_bessel(n=0, alpha=0.1)
+    run_bessel(n=1, alpha=0.1)
+    run_cauchy_euler(a=1.0, b=4.0, alpha=0.1)
     run_advection_pre()
