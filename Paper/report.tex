@@ -69,26 +69,82 @@ where $M(\cdot)$ is the linear map applying the complex rotation to the zonotope
 \end{equation}
 Finally, the inverse Interval FFT is applied to $\hat{\mathcal{Z}}_h$ to recover the sequence of guaranteed bounds $[\underline{u}, \overline{u}]$ in the physical time-domain. Because interval arithmetic strictly bounds the absolute minimal and maximal possible values during every addition and complex multiplication, the resulting physical bounds represent a mathematically guaranteed, worst-case envelope.
 
-\section{Experiments and Results}
-We evaluated the two inversion methods on two synthetic datasets generated from Neural Ordinary Differential Equations (Neural ODEs): the Simple Harmonic Oscillator (SHO) and the Damped Harmonic Oscillator (DHO).
+\subsection{Perturbation Sampling (Empirical)}
+As a complementary approach, we construct physical-space bounds by Monte Carlo sampling around a prediction $\hat{u}$. For each sample index $s \in \{1,\dots,S\}$ we draw a perturbation field $\eta^{(s)}$ (white, spatially correlated, or GP-based) and form:
+\begin{equation}
+    \tilde{u}^{(s)} = \hat{u} + \eta^{(s)}.
+\end{equation}
+The perturbed residual is evaluated with the same physics operator:
+\begin{equation}
+    \tilde{R}^{(s)} = \mathcal{D}\!\left(\tilde{u}^{(s)}\right).
+\end{equation}
+Samples are accepted pointwise in time if they satisfy the calibrated residual constraint:
+\begin{equation}
+    \left|\tilde{R}^{(s)}_t\right| \le \hat{q}_t,
+\end{equation}
+which defines an acceptance mask $m_t^{(s)} \in \{0,1\}$. The perturbation-sampling physical bounds are then the extrema over accepted samples:
+\begin{equation}
+    \underline{u}^{PS}_t = \min_{s:\,m_t^{(s)}=1} \tilde{u}^{(s)}_t,
+    \qquad
+    \overline{u}^{PS}_t = \max_{s:\,m_t^{(s)}=1} \tilde{u}^{(s)}_t.
+\end{equation}
+Unlike Interval FFT, this approach is empirical rather than guaranteed: its quality depends on the perturbation family, sample budget, and acceptance density. In practice, it often yields envelopes that are less conservative than set propagation and better calibrated than naive point-wise inversion.
 
-The bounds derived from the point-wise inverse FFT (red dashed lines) and the Interval FFT (grey shaded region) are visualized in Figure~\ref{fig:sho} and Figure~\ref{fig:dho}.
+\section{Experiments and Results}
+We evaluated three inversion methods on three synthetic datasets generated from Neural Ordinary Differential Equations (Neural ODEs) and Neural Operators (FNO): the Simple Harmonic Oscillator (SHO), the Damped Harmonic Oscillator (DHO), and the 1D Advection equation.
+
+The bounds derived from point-wise inverse FFT (red dashed lines), Interval FFT set propagation (grey shaded region), and perturbation sampling (blue dash-dot envelopes) are visualized in Figure~\ref{fig:sho}, Figure~\ref{fig:dho}, and Figure~\ref{fig:advection}. To make the guaranteed interval envelopes explicit, we also include standalone interval plots for SHO and DHO in Figure~\ref{fig:sho-interval-only} and Figure~\ref{fig:dho-interval-only}. We additionally report empirical coverage curves for all inversion methods on SHO and DHO in Figure~\ref{fig:sho-coverage} and Figure~\ref{fig:dho-coverage}.
 
 \begin{figure}[h]
     \centering
     \includegraphics[width=0.8\textwidth]{images/sho_bounds_comparison.png}
-    \caption{Physical bounds via PRE inversion for the Simple Harmonic Oscillator ($m \ddot{x} + k x = 0$). The Interval FFT (grey) produces a wider, guaranteed envelope compared to the approximate point-wise inversion (red dotted).}
+    \caption{Physical bounds via PRE inversion for the Simple Harmonic Oscillator ($m \ddot{x} + k x = 0$). Interval FFT (grey) gives a wider guaranteed envelope, while perturbation sampling (blue) provides an empirical accepted-sample envelope between point-wise and set-propagation bounds.}
     \label{fig:sho}
 \end{figure}
 
 \begin{figure}[h]
     \centering
+    \includegraphics[width=0.8\textwidth]{images/sho_bounds.png}
+    \caption{Standalone guaranteed interval bounds for the Simple Harmonic Oscillator in physical space.}
+    \label{fig:sho-interval-only}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
     \includegraphics[width=0.8\textwidth]{images/dho_bounds_comparison.png}
-    \caption{Physical bounds via PRE inversion for the Damped Harmonic Oscillator ($m \ddot{x} + c \dot{x} + k x = 0$). The Interval FFT securely encapsulates boundary edge-effects and phase variations.}
+    \caption{Physical bounds via PRE inversion for the Damped Harmonic Oscillator ($m \ddot{x} + c \dot{x} + k x = 0$). Interval FFT captures boundary edge-effects and phase variation conservatively, while perturbation sampling provides an empirical intermediate envelope.}
     \label{fig:dho}
 \end{figure}
 
-The point-wise bounds display an optimistically narrow width that theoretically fails to guarantee complete containment of worst-case oscillatory deviations. In contrast, the Interval FFT set propagation correctly identifies a wider band, formally accounting for complex phase transformations and preserving the $1 - \alpha$ coverage guarantees mapped from the residual space.
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/dho_bounds.png}
+    \caption{Standalone guaranteed interval bounds for the Damped Harmonic Oscillator in physical space.}
+    \label{fig:dho-interval-only}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/advection_bounds_comparison.png}
+    \caption{Physical bounds via PRE inversion for the 1D Advection equation ($U_t + v U_x = 0$). For a fixed-time spatial slice, point-wise (red), Interval FFT (grey), and perturbation sampling (blue) are shown together. To keep bounds numerically reasonable, envelope widths are clipped using a robust signal-scale cap.}
+    \label{fig:advection}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.72\textwidth]{images/sho_coverage_comparison.png}
+    \caption{SHO empirical coverage versus nominal coverage ($1-\alpha$) for point-wise inversion, Interval FFT set propagation, and perturbation sampling.}
+    \label{fig:sho-coverage}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.72\textwidth]{images/dho_coverage_comparison.png}
+    \caption{DHO empirical coverage versus nominal coverage ($1-\alpha$) for point-wise inversion, Interval FFT set propagation, and perturbation sampling.}
+    \label{fig:dho-coverage}
+\end{figure}
+
+The point-wise bounds display an optimistically narrow width that can fail to contain worst-case oscillatory deviations. Interval FFT set propagation identifies a wider guaranteed band by accounting for complex phase transformations. Perturbation sampling yields an empirical envelope whose coverage behavior is typically intermediate between point-wise and Interval FFT. This distinction is visible in the empirical coverage plots for both oscillators.
 
 \section{Conclusion}
 We have introduced a mathematically rigorous framework for inverting conformal prediction bounds from the residual space to the physical space using Interval FFT and Zonotopes. While the True Interval FFT bounds are inherently wider due to the conservative nature of interval arithmetic, they provide a safe, mathematically guaranteed calibration strategy for physical uncertainty quantification, overcoming the structural leakages of standard point-wise inversion.

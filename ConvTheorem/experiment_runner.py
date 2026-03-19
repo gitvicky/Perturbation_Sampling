@@ -1,22 +1,64 @@
 import numpy as np
 import torch
-import torch.nn as nn
-from torchdiffeq import odeint
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ConvTheorem.SHO.SHO_node_test import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
 from ConvTheorem.DHO.DHO_NODE import DampedHarmonicOscillator
+from ConvTheorem.Advection.Advection_PRE import run_advection_pre
 from Utils.PRE.ConvOps_0d import ConvOperator
-from Neural_PDE.UQ.inductive_cp import calibrate, emp_cov
+from ConvTheorem.inversion.residual_inversion import (
+    IntervalFFTSlicing,
+    PerturbationSamplingConfig,
+    calibrate_qhat_from_residual,
+    empirical_coverage_curve_1d,
+    invert_residual_bounds_1d,
+    perturbation_bounds_1d,
+)
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'intervalFFT'))
-from interval import interval
-from intervalFFT import intervalFFT, inverse_intervalFFT, Real, complex_prod
-from scipy.fft import fft, ifft
+def _save_coverage_plot(case_name, coverage_result, save_name):
+    plt.figure(figsize=(8, 6))
+    plt.plot(
+        coverage_result.nominal_coverage,
+        coverage_result.nominal_coverage,
+        color='black',
+        linewidth=2.0,
+        label='Ground Truth Target (Ideal)',
+    )
+    plt.plot(
+        coverage_result.nominal_coverage,
+        coverage_result.empirical_coverage_pointwise,
+        'r--',
+        linewidth=2.0,
+        label='Point-wise Inversion',
+    )
+    plt.plot(
+        coverage_result.nominal_coverage,
+        coverage_result.empirical_coverage_intervalfft,
+        color='gray',
+        linewidth=2.5,
+        label='Interval FFT Set Propagation',
+    )
+    if coverage_result.empirical_coverage_perturbation is not None:
+        plt.plot(
+            coverage_result.nominal_coverage,
+            coverage_result.empirical_coverage_perturbation,
+            color='tab:blue',
+            linestyle='-.',
+            linewidth=2.0,
+            label='Perturbation Sampling',
+        )
+    plt.xlabel('Nominal Coverage (1 - alpha)')
+    plt.ylabel('Empirical Coverage')
+    plt.title(f'{case_name}: Empirical Coverage Comparison')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', save_name)
+    plt.savefig(save_path)
+    plt.close()
+
 
 def run_sho():
     print("Running SHO Experiment...")
@@ -49,63 +91,50 @@ def run_sho():
     residual_cal = res[:4]
     residual_pred = res[4:]
 
-    ncf_scores = np.abs(residual_cal.numpy().flatten())
-    qhat = calibrate(scores=ncf_scores, n=len(ncf_scores), alpha=0.1)
-    
-    # 1) Pointwise (Approximate) Inversion 
-    qhat_tensor = torch.tensor(np.full(pos.shape[1], qhat), dtype=torch.float32).unsqueeze(0)
-    inv_qhat = D_pos.integrate(qhat_tensor, slice_pad=False)[0].numpy()
-    
-    # 2) Interval FFT Inversion (Guaranteed Set Propagation)
-    # Using the exact same logic as PRE_set_prop
+    qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
+
     test_idx = 4
-    signal_padded = np.concatenate(([0], pos[test_idx].numpy(), [0]))
-    kernel_pad = np.concatenate((D_pos.kernel.numpy(), np.zeros(len(signal_padded) - len(D_pos.kernel))))
-    
-    signal_fft = fft(signal_padded)
-    kernel_fft = fft(kernel_pad)
-    
-    convolved = ifft(signal_fft * kernel_fft)
-    inverse_kernel = 1.0 / (kernel_fft + 1e-16)
-    
-    # Convolved signal with strict qhat bound interval 
-    # Notice we use the residual bound to create intervals around the convolved signal
-    # Padding the boundaries just like original pre_set_prop
-    convolved_noedges = convolved[3:-1]
-    right_edges = convolved[0:3]
-    left_edges = convolved[-1]
-    
-    # Apply uncertainty bounds (qhat) around the residual predictions
-    # This creates a rigorous mathematical set
-    convolved_set_center = [interval([x.real - qhat, x.real + qhat]) for x in convolved_noedges]
-    convolved_set_right = [interval([x.real - qhat, x.real + qhat]) for x in right_edges]
-    convolved_set_left = [interval([left_edges.real - qhat, left_edges.real + qhat])]
-    
-    convolved_set = convolved_set_right + convolved_set_center + convolved_set_left
-    
-    print("Computing Interval FFT for SHO (this may take a minute)...")
-    convolved_set_fft = intervalFFT(convolved_set)
-    convolved_set_fft_kernel = [complex_prod(z, c) for z, c in zip(convolved_set_fft, inverse_kernel)]
-    retrieved_signal = inverse_intervalFFT(convolved_set_fft_kernel)
-    signal_bounds = [Real(z) for z in retrieved_signal]
-    
-    # Extract boundaries
-    signal_bounds_back = signal_bounds[2:2+len(t[1:-1])]
-    upper_bounds_set = [float(interval_obj[0].sup) for interval_obj in signal_bounds_back]
-    lower_bounds_set = [float(interval_obj[0].inf) for interval_obj in signal_bounds_back]
+    point_bounds, interval_bounds = invert_residual_bounds_1d(
+        pred_signal=pos[test_idx].numpy(),
+        kernel=D_pos.kernel.numpy(),
+        qhat=qhat,
+        operator=D_pos,
+        interior_slice=slice(1, -1),
+        intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
+        integrate_slice_pad=False,
+    )
+    perturb_cfg = PerturbationSamplingConfig(
+        n_samples=4000,
+        batch_size=1000,
+        max_rounds=2,
+        noise_type="spatial",
+        noise_std=0.10,
+        correlation_length=24.0,
+        seed=123,
+    )
+    perturb_bounds = perturbation_bounds_1d(
+        pred_signal=pos[test_idx].numpy(),
+        residual_operator=D_pos,
+        qhat=qhat,
+        interior_slice=slice(1, -1),
+        config=perturb_cfg,
+    )
 
     pos_res = D_pos.differentiate(pos, correlation=False, slice_pad=False)
     pos_retrieved = D_pos.integrate(pos_res, correlation=False, slice_pad=False)
 
     plt.figure(figsize=(10, 6))
+    plt.plot(t[1:-1], numerical_sol[test_idx, 1:-1, 0], color='black', linewidth=1.2, label='Ground Truth')
     plt.plot(t[1:-1], pos[test_idx, 1:-1].numpy(), 'b-', label='Predicted Position')
     
     # Plot approximate bounds
-    plt.plot(t[1:-1], pos[test_idx, 1:-1].numpy() - np.abs(inv_qhat[1:-1]), 'r--', label='Point-wise Bound')
-    plt.plot(t[1:-1], pos[test_idx, 1:-1].numpy() + np.abs(inv_qhat[1:-1]), 'r--')
+    plt.plot(t[1:-1], point_bounds.lower, 'r--', label='Point-wise Bound')
+    plt.plot(t[1:-1], point_bounds.upper, 'r--')
     
     # Plot guaranteed bounds
-    plt.fill_between(t[1:-1], lower_bounds_set, upper_bounds_set, color='gray', alpha=0.4, label='Guaranteed Set Bound (Interval FFT)')
+    plt.fill_between(t[1:-1], interval_bounds.lower, interval_bounds.upper, color='gray', alpha=0.4, label='Guaranteed Set Bound (Interval FFT)')
+    plt.plot(t[1:-1], perturb_bounds.lower, color='tab:blue', linestyle='-.', label='Perturbation Bound')
+    plt.plot(t[1:-1], perturb_bounds.upper, color='tab:blue', linestyle='-.')
     
     plt.xlabel('Time')
     plt.ylabel('Position')
@@ -115,6 +144,21 @@ def run_sho():
     save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', 'sho_bounds_comparison.png')
     plt.savefig(save_path)
     plt.close()
+
+    alpha_levels = np.arange(0.05, 0.96, 0.10)
+    sho_coverage = empirical_coverage_curve_1d(
+        preds=neural_sol[..., 0],
+        truths=numerical_sol[..., 0],
+        residual_cal=residual_cal,
+        kernel=D_pos.kernel.numpy(),
+        operator=D_pos,
+        alphas=alpha_levels,
+        interior_slice=slice(1, -1),
+        intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
+        integrate_slice_pad=False,
+        perturbation_config=perturb_cfg,
+    )
+    _save_coverage_plot("SHO", sho_coverage, "sho_coverage_comparison.png")
 
 def run_dho():
     print("Running DHO Experiment...")
@@ -149,56 +193,47 @@ def run_dho():
     residual_cal = res[:4]
     residual_pred = res[4:]
 
-    ncf_scores = np.abs(residual_cal.numpy().flatten())
-    qhat = calibrate(scores=ncf_scores, n=len(ncf_scores), alpha=0.1)
-
-    # 1) Point-wise (Approximate) Inversion
-    qhat_tensor = torch.tensor(np.full(pos.shape[1], qhat), dtype=torch.float32).unsqueeze(0)
-    inv_qhat = D_damped.integrate(qhat_tensor, slice_pad=False)[0].numpy()
-
-    # 2) Interval FFT Inversion (Guaranteed Set Propagation)
+    qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
     test_idx = 4
-    signal_padded = np.concatenate(([0], pos[test_idx].numpy(), [0]))
-    kernel_pad = np.concatenate((D_damped.kernel.numpy(), np.zeros(len(signal_padded) - len(D_damped.kernel))))
-    
-    signal_fft = fft(signal_padded)
-    kernel_fft = fft(kernel_pad)
-    
-    convolved = ifft(signal_fft * kernel_fft)
-    inverse_kernel = 1.0 / (kernel_fft + 1e-16)
-    
-    convolved_noedges = convolved[3:-1]
-    right_edges = convolved[0:3]
-    left_edges = convolved[-1]
-    
-    # Apply uncertainty bounds (qhat) around the residual predictions
-    convolved_set_center = [interval([x.real - qhat, x.real + qhat]) for x in convolved_noedges]
-    convolved_set_right = [interval([x.real - qhat, x.real + qhat]) for x in right_edges]
-    convolved_set_left = [interval([left_edges.real - qhat, left_edges.real + qhat])]
-    
-    convolved_set = convolved_set_right + convolved_set_center + convolved_set_left
-    
-    print("Computing Interval FFT for DHO (this may take a minute)...")
-    convolved_set_fft = intervalFFT(convolved_set)
-    convolved_set_fft_kernel = [complex_prod(z, c) for z, c in zip(convolved_set_fft, inverse_kernel)]
-    retrieved_signal = inverse_intervalFFT(convolved_set_fft_kernel)
-    signal_bounds = [Real(z) for z in retrieved_signal]
-    
-    # Extract boundaries
-    signal_bounds_back = signal_bounds[2:2+len(t[1:-1])]
-    upper_bounds_set = [float(interval_obj[0].sup) for interval_obj in signal_bounds_back]
-    lower_bounds_set = [float(interval_obj[0].inf) for interval_obj in signal_bounds_back]
+    point_bounds, interval_bounds = invert_residual_bounds_1d(
+        pred_signal=pos[test_idx].numpy(),
+        kernel=D_damped.kernel.numpy(),
+        qhat=qhat,
+        operator=D_damped,
+        interior_slice=slice(1, -1),
+        intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
+        integrate_slice_pad=False,
+    )
+    perturb_cfg = PerturbationSamplingConfig(
+        n_samples=4000,
+        batch_size=1000,
+        max_rounds=2,
+        noise_type="spatial",
+        noise_std=0.10,
+        correlation_length=24.0,
+        seed=321,
+    )
+    perturb_bounds = perturbation_bounds_1d(
+        pred_signal=pos[test_idx].numpy(),
+        residual_operator=D_damped,
+        qhat=qhat,
+        interior_slice=slice(1, -1),
+        config=perturb_cfg,
+    )
 
 
     plt.figure(figsize=(10, 6))
+    plt.plot(t[1:-1], numerical_sol[test_idx, 1:-1, 0], color='black', linewidth=1.2, label='Ground Truth')
     plt.plot(t[1:-1], pos[test_idx, 1:-1].numpy(), 'b-', label='Predicted Position')
     
     # Plot approximate bounds
-    plt.plot(t[1:-1], pos[test_idx, 1:-1].numpy() - np.abs(inv_qhat[1:-1]), 'r--', label='Point-wise Bound')
-    plt.plot(t[1:-1], pos[test_idx, 1:-1].numpy() + np.abs(inv_qhat[1:-1]), 'r--')
+    plt.plot(t[1:-1], point_bounds.lower, 'r--', label='Point-wise Bound')
+    plt.plot(t[1:-1], point_bounds.upper, 'r--')
     
     # Plot guaranteed bounds
-    plt.fill_between(t[1:-1], lower_bounds_set, upper_bounds_set, color='gray', alpha=0.4, label='Guaranteed Set Bound (Interval FFT)')
+    plt.fill_between(t[1:-1], interval_bounds.lower, interval_bounds.upper, color='gray', alpha=0.4, label='Guaranteed Set Bound (Interval FFT)')
+    plt.plot(t[1:-1], perturb_bounds.lower, color='tab:blue', linestyle='-.', label='Perturbation Bound')
+    plt.plot(t[1:-1], perturb_bounds.upper, color='tab:blue', linestyle='-.')
     
     plt.xlabel('Time')
     plt.ylabel('Position')
@@ -209,6 +244,22 @@ def run_dho():
     plt.savefig(save_path)
     plt.close()
 
+    alpha_levels = np.arange(0.05, 0.96, 0.10)
+    dho_coverage = empirical_coverage_curve_1d(
+        preds=neural_sol[..., 0],
+        truths=numerical_sol[..., 0],
+        residual_cal=residual_cal,
+        kernel=D_damped.kernel.numpy(),
+        operator=D_damped,
+        alphas=alpha_levels,
+        interior_slice=slice(1, -1),
+        intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
+        integrate_slice_pad=False,
+        perturbation_config=perturb_cfg,
+    )
+    _save_coverage_plot("DHO", dho_coverage, "dho_coverage_comparison.png")
+
 if __name__ == '__main__':
     run_sho()
     run_dho()
+    run_advection_pre()
