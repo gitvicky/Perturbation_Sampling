@@ -16,7 +16,7 @@
 \maketitle
 
 \begin{abstract}
-We propose a methodology to invert conformal prediction bounds from the physics residual space back to the physical state-space in Neural PDE/ODE solvers. While standard point-wise inversion through the frequency domain provides approximate uncertainty bounds, it fails to preserve strict mathematical guarantees due to complex phase shifts. To address this, we introduce a set propagation technique using an Interval Fast Fourier Transform (Interval FFT) operating over Zonotopes. This ensures that the volumetric uncertainty in the residual space is rigorously bounded in the physical domain. We validate our approach on Simple and Damped Harmonic Oscillators, Bessel and Cauchy-Euler ODEs, and 1D Advection.
+We propose a methodology to invert conformal prediction bounds from the physics residual space back to the physical state-space in Neural PDE/ODE solvers. While standard point-wise inversion through the frequency domain provides approximate uncertainty bounds, it fails to preserve strict mathematical guarantees due to complex phase shifts. To address this, we introduce a set propagation technique using an Interval Fast Fourier Transform (Interval FFT) operating over Zonotopes. This ensures that the volumetric uncertainty in the residual space is rigorously bounded in the physical domain. We validate our approach on Simple and Damped Harmonic Oscillators.
 \end{abstract}
 
 \section{Introduction}
@@ -92,9 +92,9 @@ which defines an acceptance mask $m_t^{(s)} \in \{0,1\}$. The perturbation-sampl
 Unlike Interval FFT, this approach is empirical rather than guaranteed: its quality depends on the perturbation family, sample budget, and acceptance density. In practice, it often yields envelopes that are less conservative than set propagation and better calibrated than naive point-wise inversion.
 
 \section{Experiments and Results}
-We evaluated three inversion methods on synthetic datasets generated from Neural Ordinary Differential Equations (Neural ODEs) and Neural Operators (FNO): the Simple Harmonic Oscillator (SHO), the Damped Harmonic Oscillator (DHO), Bessel equations ($n=0,1$), the Cauchy-Euler equation ($a=1,b=4$), and the 1D Advection equation.
+We evaluated three inversion methods on synthetic datasets generated from Neural Ordinary Differential Equations (Neural ODEs): the Simple Harmonic Oscillator (SHO) and the Damped Harmonic Oscillator (DHO).
 
-The bounds derived from point-wise inverse FFT (red dashed lines), Interval FFT set propagation (grey shaded region), and perturbation sampling (blue dash-dot envelopes) are visualized in Figure~\ref{fig:sho}, Figure~\ref{fig:dho}, and Figure~\ref{fig:advection}. To make the guaranteed interval envelopes explicit, we also include standalone interval plots for SHO and DHO in Figure~\ref{fig:sho-interval-only} and Figure~\ref{fig:dho-interval-only}. We additionally report empirical coverage curves for all inversion methods on SHO and DHO in Figure~\ref{fig:sho-coverage} and Figure~\ref{fig:dho-coverage}.
+The bounds derived from point-wise inverse FFT (red dashed lines), Interval FFT set propagation (grey shaded region), and perturbation sampling (blue dash-dot envelopes) are visualized in Figure~\ref{fig:sho} and Figure~\ref{fig:dho}. To make the guaranteed interval envelopes explicit, we also include standalone interval plots for SHO and DHO in Figure~\ref{fig:sho-interval-only} and Figure~\ref{fig:dho-interval-only}. We additionally report empirical coverage curves for all inversion methods on SHO and DHO in Figure~\ref{fig:sho-coverage} and Figure~\ref{fig:dho-coverage}.
 
 \begin{figure}[h]
     \centering
@@ -110,26 +110,6 @@ The bounds derived from point-wise inverse FFT (red dashed lines), Interval FFT 
     \label{fig:sho-interval-only}
 \end{figure}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\textwidth]{images/bessel_n0_bounds_comparison.png}
-    \caption{Bessel $n=0$: physical bounds via point-wise inversion, Interval FFT set propagation, and perturbation sampling.}
-    \label{fig:bessel-n0}
-\end{figure}
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\textwidth]{images/bessel_n1_bounds_comparison.png}
-    \caption{Bessel $n=1$: physical bounds via point-wise inversion, Interval FFT set propagation, and perturbation sampling.}
-    \label{fig:bessel-n1}
-\end{figure}
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\textwidth]{images/cauchy_euler_a1_b4_bounds_comparison.png}
-    \caption{Cauchy-Euler ($a=1,b=4$): physical bounds via point-wise inversion, Interval FFT set propagation, and perturbation sampling.}
-    \label{fig:cauchy-euler}
-\end{figure}
 
 \begin{figure}[h]
     \centering
@@ -145,12 +125,6 @@ The bounds derived from point-wise inverse FFT (red dashed lines), Interval FFT 
     \label{fig:dho-interval-only}
 \end{figure}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\textwidth]{images/advection_bounds_comparison.png}
-    \caption{Physical bounds via PRE inversion for the 1D Advection equation ($U_t + v U_x = 0$). For a fixed-time spatial slice, point-wise (red), Interval FFT (grey), and perturbation sampling (blue) are shown together. To keep bounds numerically reasonable, envelope widths are clipped using a robust signal-scale cap.}
-    \label{fig:advection}
-\end{figure}
 
 \begin{figure}[h]
     \centering
@@ -176,10 +150,6 @@ The bounds derived from point-wise inverse FFT (red dashed lines), Interval FFT 
         \midrule
         SHO & 0.00 & 1.00 & 1.00 \\
         DHO & 0.00 & 1.00 & 1.00 \\
-        Bessel $n=0$ & 1.00 & 1.00 & 0.00 \\
-        Bessel $n=1$ & 1.00 & 1.00 & 0.40 \\
-        Cauchy-Euler $(a=1,b=4)$ & 1.00 & 1.00 & 0.00 \\
-        Advection (mid-time slice) & 1.00 & 1.00 & 0.00 \\
         \bottomrule
     \end{tabular}
 \end{table}

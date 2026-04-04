@@ -8,7 +8,7 @@ import random
 from interval import interval
 from zonotope import Zonotope as zonotope
 from intervalFFT import (
-    intervalFFT, inverse_intervalFFT, Real, 
+    intervalFFT, inverse_intervalFFT, Real,
     complex_prod
 )
 
