@@ -2,14 +2,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from interval import interval
-from zonotope import Zonotope as zonotope
+from ConvTheorem.intervalFFT.zonotope import Zonotope as zonotope
 import sys
 
 # Add the current directory to the path to import our modules
 sys.path.append('.')
 
 # Import our custom modules
-from pre_set_prop import set_PRE
+from ConvTheorem.intervalFFT.pre_set_prop import set_PRE
 
 def generate_synthetic_data():
     """
