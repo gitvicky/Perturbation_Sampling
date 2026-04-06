@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from interval import interval
 from scipy.fft import fft, ifft
+from tqdm import tqdm
 
 _INTERVALFFT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "intervalFFT"))
 if _INTERVALFFT_DIR not in sys.path:
@@ -350,12 +351,12 @@ def empirical_coverage_curve_1d(
     preds = np.asarray(preds, dtype=float)
     truths = np.asarray(truths, dtype=float)
 
-    for alpha in alphas:
+    for alpha in tqdm(alphas, desc="Coverage alphas", unit="α"):
         qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
         point_cover_flags = []
         interval_cover_flags = []
 
-        for i in range(preds.shape[0]):
+        for i in tqdm(range(preds.shape[0]), desc=f"  α={float(alpha):.2f} trajectories", leave=False, unit="traj"):
             point_bounds, interval_bounds = invert_residual_bounds_1d(
                 pred_signal=preds[i],
                 kernel=kernel,
