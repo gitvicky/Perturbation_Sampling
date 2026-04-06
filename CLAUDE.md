@@ -4,7 +4,7 @@
 
 This project inverts **Physics Residual Error (PRE) bounds from residual space to physical space** for neural PDE/ODE solvers. It extends the ICML paper "Calibrated Physics-Informed Uncertainty Quantification" (Gopakumar et al., 2025) which provides conformal prediction (CP) coverage guarantees in the residual space. The core research question: given calibrated bounds `[-qhat, +qhat]` on the PDE residual, what are the corresponding bounds on the predicted field?
 
-**Current focus**: ODEs first, then 1D PDEs (Advection). Higher-dimensional PDEs are future work.
+**Current focus**: ODEs (SHO, DHO). Bessel, Cauchy-Euler, and 1D Advection PDE experiments are in `earlier/` (archived). Higher-dimensional PDEs are future work.
 
 **Paper reference**: `2502.04406v2` — Calibrated Physics-Informed Uncertainty Quantification.
 
@@ -21,33 +21,52 @@ This project inverts **Physics Residual Error (PRE) bounds from residual space t
 ## Repository Structure
 
 ```
-ConvTheorem/                    # Main experimental suite
-  experiment_runner.py          # Entry point: runs all ODE/PDE experiments
+Expts/                              # Experiment suite
+  experiment_runner.py              # Entry point: runs SHO and DHO experiments
+  SHO/
+    SHO_NODE.py                     # Simple Harmonic Oscillator (Neural ODE)
+    PRE_set_prop.jl                 # Julia reference implementation of set propagation
+    intervalFFT.jl                  # Julia reference implementation of interval FFT
+  DHO/
+    DHO_NODE.py                     # Damped Harmonic Oscillator (Neural ODE)
+
+Inversion_Strategies/               # Core inversion methods
   inversion/
-    residual_inversion.py       # Core inversion logic (all 3 methods + coverage curves)
+    __init__.py
+    residual_inversion.py           # All 3 inversion methods + coverage curves
   intervalFFT/
-    intervalFFT.py              # FFT with interval arithmetic
-    zonotope.py                 # Zonotope data structure for set representation
-    pre_set_prop.py             # PRE set propagation algorithm
-  SHO/SHO_node_test.py          # Simple Harmonic Oscillator (Neural ODE)
-  DHO/DHO_NODE.py               # Damped Harmonic Oscillator
-  Bessel/Bessel_NODE.py         # Bessel ODE
-  Cauchy_Euler/Cauchy_Euler_NODE.py
-  Advection/                    # 1D Advection PDE (FNO-based)
-    Advection_FNO.py
-    Advection_PRE.py
+    intervalFFT.py                  # FFT with interval arithmetic (Python)
+    zonotope.py                     # Zonotope data structure for set representation
+    pre_set_prop.py                 # PRE set propagation algorithm
+    example.py                      # Standalone usage example
+  tests/
+    PerturbSampling/                # Perturbation sampling test scripts
+    vector_residuals_test.py        # Vector residual tests
+    vector_tests.py                 # Vector operation tests
 
-Neural_PDE/                     # Git submodule — neural surrogate framework
-  UQ/inductive_cp.py            # Conformal prediction calibration (calibrate function)
-  Utils/PRE/                    # ConvOps for 0d, 1d, 2d residual computation
-  Models/                       # Trained model weights
+Utils/                              # Shared utilities
+  PRE/
+    ConvOps_0d.py                   # ConvOperator — wraps FD stencils as conv kernels (0D/temporal)
+    ConvOps_1d.py                   # 1D spatial convolution operator
+    ConvOps_2d.py                   # 2D spatial convolution operator
+    ConvOps_Spatial.py              # Spatial convolution utilities
+    Stencils.py                     # Finite-difference stencil definitions
+    VectorConvOps.py                # Vector-valued convolution operators
+    VectorConvOps_Spatial.py        # Spatial vector convolution operators
+    boundary_conditions.py          # Boundary condition handling
+    fft_conv_pytorch/               # PyTorch FFT convolution implementation
+  CP/
+    inductive_cp.py                 # Conformal prediction calibration (calibrate, emp_cov)
+  noise_gen.py                      # Correlated noise for perturbation sampling
 
-Utils/
-  PRE/ConvOps_0d.py             # ConvOperator class — wraps FD stencils as conv kernels
-  noise_gen.py                  # Correlated noise for perturbation sampling
+Neural_PDE/                         # Git submodule — neural surrogate framework
+  UQ/inductive_cp.py               # CP calibration (referenced by inversion code)
+  Models/                           # Trained model weights
 
-PerturbSampling/                # Standalone perturbation sampling experiments
-Paper/                          # LaTeX report + generated plots in Paper/images/
+earlier/                            # Archived experiments (Bessel, Cauchy-Euler, Advection)
+Notes/                              # Research notes and reference PDFs
+Paper/                              # LaTeX report + generated plots in Paper/images/
+tests/                              # Exploratory tests (Fourier continuation, GP uncertainty)
 ```
 
 ## Running Experiments
@@ -56,12 +75,12 @@ Paper/                          # LaTeX report + generated plots in Paper/images
 # Activate the virtual environment
 source .venv/bin/activate
 
-# Run all experiments (SHO, DHO, Bessel, Cauchy-Euler, Advection)
-python ConvTheorem/experiment_runner.py
+# Run all active experiments (SHO + DHO)
+python Expts/experiment_runner.py
 
-# Individual ODE test cases can be run directly:
-python ConvTheorem/SHO/SHO_node_test.py
-python ConvTheorem/DHO/DHO_NODE.py
+# Individual ODE test cases:
+python Expts/SHO/SHO_NODE.py
+python Expts/DHO/DHO_NODE.py
 ```
 
 Outputs: coverage statistics to console, comparison plots saved to `Paper/images/`.
@@ -94,7 +113,7 @@ D.differentiate(signal)                # spectral differentiation
 D.integrate(signal)                    # spectral integration (divide by kernel FFT)
 
 # Inversion
-from ConvTheorem.inversion.residual_inversion import (
+from Inversion_Strategies.inversion.residual_inversion import (
     calibrate_qhat_from_residual,
     invert_residual_bounds_1d,
     perturbation_bounds_1d,
@@ -120,3 +139,4 @@ Python 3.11 via `.venv`.
 - Interval arithmetic uses `python-interval` library. Use `interval([a, b])` (list syntax) not `interval(a, b)` for proper bounds.
 - For ODE cases, the composite kernel combines temporal derivative stencils scaled by `dt` and physical parameters (e.g., `m*D_tt + dt^2*k*D_identity` for SHO).
 - `IntervalFFTSlicing` controls how the interval FFT output is aligned back to the original signal — edge effects from FFT require careful slicing.
+- Julia reference implementations (`PRE_set_prop.jl`, `intervalFFT.jl`) exist in `Expts/SHO/` alongside the Python versions.

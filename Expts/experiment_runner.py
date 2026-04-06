@@ -7,7 +7,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Utils.PRE.ConvOps_0d import ConvOperator
-from ConvTheorem.inversion.residual_inversion import (
+from Inversion_Strategies.inversion.residual_inversion import (
     IntervalFFTSlicing,
     PerturbationSamplingConfig,
     calibrate_qhat_from_residual,
