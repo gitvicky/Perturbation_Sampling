@@ -6,11 +6,7 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from ConvTheorem.SHO.SHO_node_test import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-from ConvTheorem.DHO.DHO_NODE import DampedHarmonicOscillator
-
 from Utils.PRE.ConvOps_0d import ConvOperator
-
 from ConvTheorem.inversion.residual_inversion import (
     IntervalFFTSlicing,
     PerturbationSamplingConfig,
@@ -63,6 +59,7 @@ def _save_coverage_plot(case_name, coverage_result, save_name):
 
 
 def run_sho():
+    from Expts.SHO.SHO_NODE import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
     print("Running SHO Experiment...")
     m, k = 1.0, 1.0 
     oscillator = HarmonicOscillator(k, m)
@@ -163,6 +160,8 @@ def run_sho():
     _save_coverage_plot("SHO", sho_coverage, "sho_coverage_comparison.png")
 
 def run_dho():
+    from Expts.DHO.DHO_NODE import DampedHarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
+
     print("Running DHO Experiment...")
     m, k, c = 1.0, 1.0, 0.2
     oscillator = DampedHarmonicOscillator(k, m, c)

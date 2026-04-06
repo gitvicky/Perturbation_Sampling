@@ -18,7 +18,7 @@ Cases being explored:
 """
 
 # %%
-from PerturbSampling.SHO_Neural_ODE import * 
+from Inversion_Strategies.tests.PerturbSampling.SHO_Neural_ODE import * 
 
 #Executions 
 # Initialize system
