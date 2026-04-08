@@ -702,8 +702,94 @@ class PDENoiseGenerator1D:
             correlated_noise = correlated_noise * std / current_std
         
         return correlated_noise
-    
 
+    # ----- B-spline noise (C2-continuous by construction) -----
+
+    @staticmethod
+    def _cubic_bspline_1d(t):
+        """Uniform cubic B-spline kernel, support on [-2, 2], C2 continuous.
+
+        Adapted from the SplineFNO implementation.
+        """
+        abs_t = torch.abs(t)
+        result = torch.zeros_like(t)
+
+        mask1 = abs_t < 1
+        a1 = abs_t[mask1]
+        result[mask1] = (2.0 / 3.0) - a1 ** 2 + 0.5 * a1 ** 3
+
+        mask2 = (abs_t >= 1) & (abs_t < 2)
+        a2 = abs_t[mask2]
+        result[mask2] = (1.0 / 6.0) * (2.0 - a2) ** 3
+
+        return result
+
+    def _build_bspline_basis_1d(self, n_points, n_knots, device, dtype):
+        """Build 1D B-spline basis matrix Phi [n_points, n_knots].
+
+        Parameters
+        ----------
+        n_points : int
+            Number of evaluation points (the signal length).
+        n_knots : int
+            Number of uniformly-spaced control points.
+
+        Returns
+        -------
+        Phi : Tensor [n_points, n_knots]
+        """
+        eval_pts = torch.linspace(0.0, 1.0, n_points, device=device, dtype=dtype)
+        knots = torch.linspace(0.0, 1.0, n_knots, device=device, dtype=dtype)
+        dk = knots[1] - knots[0]
+
+        # Relative distances: [n_points, n_knots]
+        t = (eval_pts.unsqueeze(1) - knots.unsqueeze(0)) / dk
+        Phi = self._cubic_bspline_1d(t)
+        return Phi
+
+    def bspline_noise(self, batch_size, n_points, n_knots=16, std=1.0, seed=None):
+        """Generate C2-continuous noise via cubic B-spline basis.
+
+        Samples random control-point coefficients and evaluates the spline,
+        producing noise that is smooth by construction.  The spatial scale is
+        controlled by ``n_knots``: fewer knots produce smoother (longer-
+        wavelength) perturbations.
+
+        Parameters
+        ----------
+        batch_size : int
+            Number of independent noise realizations.
+        n_points : int
+            Number of spatial discretization points.
+        n_knots : int
+            Number of uniform B-spline control points.  Typical range 8-32.
+            Lower values give smoother noise; higher values approach white noise.
+        std : float
+            Desired standard deviation of the output noise.
+        seed : int, optional
+            Random seed for reproducibility.
+
+        Returns
+        -------
+        Tensor [batch_size, n_points]
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        Phi = self._build_bspline_basis_1d(n_points, n_knots, self.device, self.dtype)
+
+        # Random control-point coefficients: [batch_size, n_knots]
+        coeffs = torch.randn(batch_size, n_knots, device=self.device, dtype=self.dtype)
+
+        # Evaluate spline: [batch_size, n_knots] @ [n_knots, n_points] -> [batch_size, n_points]
+        noise = coeffs @ Phi.t()
+
+        # Normalize to target std
+        current_std = torch.std(noise)
+        if current_std > 1e-10:
+            noise = noise * std / current_std
+
+        return noise
 
 
     def gp_noise(self, batch_size, n_points, correlation_length=5.0, std=1.0, 

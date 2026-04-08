@@ -9,9 +9,10 @@ Each experiment follows the same pipeline:
   5. Plot bound comparisons and empirical coverage curves
 
 Usage:
-  python Expts/experiment_runner.py           # run all
-  python Expts/experiment_runner.py sho       # run only SHO
-  python Expts/experiment_runner.py sho dho   # run SHO and DHO
+  python Expts/experiment_runner.py                        # run all, default spatial noise
+  python Expts/experiment_runner.py sho                    # run only SHO
+  python Expts/experiment_runner.py --noise-type bspline   # run all with B-spline noise
+  python Expts/experiment_runner.py sho --noise-type gp    # SHO with GP noise
 """
 # %%a
 import argparse
@@ -50,6 +51,30 @@ plt.rcParams.update({
     'savefig.bbox': 'tight',
     'savefig.pad_inches': 0.15,
 })
+
+
+NOISE_TYPES = ("spatial", "white", "gp", "bspline")
+
+
+def _build_perturbation_config(noise_type, seed=123):
+    """Build a PerturbationSamplingConfig for the given noise type."""
+    common = dict(
+        n_samples=4000,
+        batch_size=1000,
+        max_rounds=2,
+        noise_std=0.10,
+        seed=seed,
+    )
+    if noise_type == "spatial":
+        return PerturbationSamplingConfig(noise_type="spatial", correlation_length=24.0, **common)
+    elif noise_type == "white":
+        return PerturbationSamplingConfig(noise_type="white", **common)
+    elif noise_type == "gp":
+        return PerturbationSamplingConfig(noise_type="gp", correlation_length=24.0, gp_kernel="rbf", **common)
+    elif noise_type == "bspline":
+        return PerturbationSamplingConfig(noise_type="bspline", bspline_n_knots=16, **common)
+    else:
+        raise ValueError(f"Unknown noise type: {noise_type}. Choose from {NOISE_TYPES}")
 
 
 def _style_ax(ax):
@@ -105,10 +130,10 @@ def _save_coverage_plot(case_name, coverage_result, save_name):
     plt.close(fig)
 
 
-def run_sho(transductive=False):
+def run_sho(transductive=False, noise_type="spatial"):
     """Simple Harmonic Oscillator: m*x'' + k*x = 0"""
     from Expts.SHO.SHO_NODE import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'})...")
+    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type})...")
 
     # --- 1. Train Neural ODE ---
     m, k = 1.0, 1.0
@@ -163,16 +188,8 @@ def run_sho(transductive=False):
     )
     print("  [2/5] Point-wise + Interval FFT inversion... done")
 
-    print("  [3/5] Perturbation sampling inversion...")
-    perturb_cfg = PerturbationSamplingConfig(
-        n_samples=4000,
-        batch_size=1000,
-        max_rounds=2,
-        noise_type="spatial",
-        noise_std=0.10,
-        correlation_length=24.0,
-        seed=123,
-    )
+    print(f"  [3/5] Perturbation sampling inversion ({noise_type})...")
+    perturb_cfg = _build_perturbation_config(noise_type, seed=123)
     perturb_bounds = perturbation_bounds_1d(
         pred_signal=pos[test_idx].numpy(),
         residual_operator=D_pos,
@@ -180,7 +197,7 @@ def run_sho(transductive=False):
         interior_slice=slice(1, -1),
         config=perturb_cfg,
     )
-    print("  [3/5] Perturbation sampling inversion... done")
+    print(f"  [3/5] Perturbation sampling inversion ({noise_type})... done")
 
     # Verify round-trip: differentiate then integrate should recover the signal
     pos_res = D_pos.differentiate(pos, correlation=False, slice_pad=False)
@@ -211,7 +228,7 @@ def run_sho(transductive=False):
 
     # Perturbation bounds
     ax.plot(tt, perturb_bounds.lower, color=PALETTE['perturbation'], linestyle='-.',
-            linewidth=1.6, zorder=3, label='Perturbation Bound')
+            linewidth=1.6, zorder=3, label=f'Perturbation Bound ({noise_type})')
     ax.plot(tt, perturb_bounds.upper, color=PALETTE['perturbation'], linestyle='-.',
             linewidth=1.6, zorder=3)
 
@@ -249,10 +266,10 @@ def run_sho(transductive=False):
     print("  SHO experiment complete.\n")
 
 
-def run_dho(transductive=False):
+def run_dho(transductive=False, noise_type="spatial"):
     """Damped Harmonic Oscillator: m*x'' + c*x' + k*x = 0"""
     from Expts.DHO.DHO_NODE import DampedHarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'})...")
+    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type})...")
 
     # --- 1. Train Neural ODE ---
     m, k, c = 1.0, 1.0, 0.2
@@ -309,16 +326,8 @@ def run_dho(transductive=False):
     )
     print("  [2/5] Point-wise + Interval FFT inversion... done")
 
-    print("  [3/5] Perturbation sampling inversion...")
-    perturb_cfg = PerturbationSamplingConfig(
-        n_samples=4000,
-        batch_size=1000,
-        max_rounds=2,
-        noise_type="spatial",
-        noise_std=0.10,
-        correlation_length=24.0,
-        seed=321,
-    )
+    print(f"  [3/5] Perturbation sampling inversion ({noise_type})...")
+    perturb_cfg = _build_perturbation_config(noise_type, seed=321)
     perturb_bounds = perturbation_bounds_1d(
         pred_signal=pos[test_idx].numpy(),
         residual_operator=D_damped,
@@ -326,7 +335,7 @@ def run_dho(transductive=False):
         interior_slice=slice(1, -1),
         config=perturb_cfg,
     )
-    print("  [3/5] Perturbation sampling inversion... done")
+    print(f"  [3/5] Perturbation sampling inversion ({noise_type})... done")
 
     # Verify round-trip: differentiate then integrate should recover the signal
     pos_res = D_damped.differentiate(pos, correlation=False, slice_pad=False)
@@ -358,7 +367,7 @@ def run_dho(transductive=False):
 
     # Perturbation bounds
     ax.plot(tt, perturb_bounds.lower, color=PALETTE['perturbation'], linestyle='-.',
-            linewidth=1.6, zorder=3, label='Perturbation Bound')
+            linewidth=1.6, zorder=3, label=f'Perturbation Bound ({noise_type})')
     ax.plot(tt, perturb_bounds.upper, color=PALETTE['perturbation'], linestyle='-.',
             linewidth=1.6, zorder=3)
 
@@ -414,9 +423,13 @@ if __name__ == '__main__':
         '--transductive', action='store_true',
         help='Use all data for calibration (transductive CP) instead of 80/20 split',
     )
+    parser.add_argument(
+        '--noise-type', default='spatial', choices=NOISE_TYPES,
+        help=f'Noise model for perturbation sampling (default: spatial). Choices: {", ".join(NOISE_TYPES)}',
+    )
     args = parser.parse_args()
 
     for name in args.experiments:
-        EXPERIMENTS[name](transductive=args.transductive)
+        EXPERIMENTS[name](transductive=args.transductive, noise_type=args.noise_type)
 
 # %%

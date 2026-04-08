@@ -17,15 +17,6 @@ from intervalFFT import Real, complex_prod, intervalFFT, inverse_intervalFFT
 from Neural_PDE.UQ.inductive_cp import calibrate
 from Utils.noise_gen import PDENoiseGenerator1D
 
-
-@dataclass(frozen=True)
-class IntervalFFTSlicing:
-    center_start: int = 3
-    center_end: int = -1
-    n_right_edges: int = 3
-    output_offset: int = 2
-
-
 @dataclass(frozen=True)
 class InversionBounds1D:
     lower: np.ndarray
@@ -34,11 +25,11 @@ class InversionBounds1D:
 
 
 @dataclass(frozen=True)
-class CoverageResult:
-    nominal_coverage: np.ndarray
-    empirical_coverage_pointwise: np.ndarray
-    empirical_coverage_intervalfft: np.ndarray
-    empirical_coverage_perturbation: Optional[np.ndarray] = None
+class IntervalFFTSlicing:
+    center_start: int = 3
+    center_end: int = -1
+    n_right_edges: int = 3
+    output_offset: int = 2
 
 
 @dataclass(frozen=True)
@@ -51,8 +42,17 @@ class PerturbationSamplingConfig:
     correlation_length: float = 32.0
     gp_kernel: str = "rbf"
     gp_nu: float = 1.5
+    bspline_n_knots: int = 16
     seed: Optional[int] = None
-    std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25)
+    std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125)
+
+
+@dataclass(frozen=True)
+class CoverageResult:
+    nominal_coverage: np.ndarray
+    empirical_coverage_pointwise: np.ndarray
+    empirical_coverage_intervalfft: np.ndarray
+    empirical_coverage_perturbation: Optional[np.ndarray] = None
 
 
 def calibrate_qhat_from_residual(residual_cal: torch.Tensor, alpha: float) -> float:
@@ -284,6 +284,14 @@ def perturbation_bounds_1d(
                     std=trial_std,
                     kernel_type=config.gp_kernel,
                     nu=config.gp_nu,
+                    seed=seed,
+                )
+            elif config.noise_type == "bspline":
+                noise = noise_gen.bspline_noise(
+                    draw,
+                    len(pred_signal),
+                    n_knots=config.bspline_n_knots,
+                    std=trial_std,
                     seed=seed,
                 )
             else:
