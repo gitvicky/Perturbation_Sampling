@@ -43,6 +43,7 @@ class PerturbationSamplingConfig:
     gp_kernel: str = "rbf"
     gp_nu: float = 1.5
     bspline_n_knots: int = 16
+    pre_kernel: Optional[torch.Tensor] = None
     seed: Optional[int] = None
     std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125)
 
@@ -291,6 +292,16 @@ def perturbation_bounds_1d(
                     draw,
                     len(pred_signal),
                     n_knots=config.bspline_n_knots,
+                    std=trial_std,
+                    seed=seed,
+                )
+            elif config.noise_type == "pre_correlated":
+                if config.pre_kernel is None:
+                    raise ValueError("pre_kernel must be set in config for noise_type='pre_correlated'")
+                noise = noise_gen.pre_correlated_noise(
+                    draw,
+                    len(pred_signal),
+                    kernel=config.pre_kernel.clone(),
                     std=trial_std,
                     seed=seed,
                 )

@@ -876,8 +876,9 @@ class PDENoiseGenerator1D:
             import gpytorch
         except ImportError:
             print("Warning: GPyTorch not available. Falling back to convolution method.")
-            return self._spatially_correlated_noise_fallback(batch_size, n_points, 
-                                                           correlation_length, std, seed)
+            return self.spatially_correlated_noise(batch_size, n_points,
+                                                    correlation_length=correlation_length,
+                                                    std=std, seed=seed)
         
         # Create input locations (spatial grid)
         # Normalize to [0, 1] interval for better numerical stability
