@@ -45,7 +45,7 @@ class PerturbationSamplingConfig:
     bspline_n_knots: int = 16
     pre_kernel: Optional[torch.Tensor] = None
     seed: Optional[int] = None
-    std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125)
+    std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125, 0.0625)
 
 
 @dataclass(frozen=True)
