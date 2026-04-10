@@ -4,6 +4,7 @@ from .residual_inversion import (
     InversionBounds1D,
     PerturbationSamplingConfig,
     calibrate_qhat_from_residual,
+    calibrate_qhat_joint_from_residual,
     empirical_coverage_curve_1d,
     intervalfft_slice_inversion_bounds_1d,
     perturbation_bounds_1d,

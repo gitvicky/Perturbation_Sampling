@@ -61,16 +61,37 @@ def calibrate_qhat_from_residual(residual_cal: torch.Tensor, alpha: float) -> fl
     return float(calibrate(scores=scores, n=len(scores), alpha=alpha))
 
 
+def calibrate_qhat_joint_from_residual(
+    residual_cal: torch.Tensor, alpha: float, eps: float = 1e-16,
+) -> tuple[float, np.ndarray]:
+    """Joint conformal calibration over residuals.
+
+    Returns (qhat, modulation) where the per-point residual bound is
+    ``qhat * modulation``.  The nonconformity score for each trajectory is
+    ``max_t |residual(t)| / modulation(t)`` — a single scalar per trajectory —
+    so the resulting ``qhat`` controls *joint* (simultaneous) coverage.
+    """
+    res_np = residual_cal.detach().cpu().numpy()                  # [N, T]
+    modulation = np.std(res_np, axis=0)                           # [T]
+    modulation = np.maximum(modulation, eps)                      # avoid /0
+    scores = np.max(np.abs(res_np) / modulation[None, :], axis=tuple(range(1, res_np.ndim)))  # [N]
+    qhat = float(calibrate(scores=scores, n=len(scores), alpha=alpha))
+    return qhat, modulation
+
+
 def pointwise_inverse_width(
     operator,
     n_points: int,
-    qhat: float,
+    qhat,
     *,
     dtype: torch.dtype = torch.float32,
     device: Optional[torch.device] = None,
     slice_pad: bool = False,
 ) -> np.ndarray:
-    qhat_tensor = torch.full((1, n_points), float(qhat), dtype=dtype, device=device)
+    if np.ndim(qhat) == 0:
+        qhat_tensor = torch.full((1, n_points), float(qhat), dtype=dtype, device=device)
+    else:
+        qhat_tensor = torch.tensor(np.asarray(qhat, dtype=np.float64), dtype=dtype, device=device).unsqueeze(0)
     inv_qhat = operator.integrate(qhat_tensor, slice_pad=slice_pad)[0]
     return np.abs(inv_qhat.detach().cpu().numpy())
 
@@ -111,7 +132,7 @@ def pointwise_inversion_bounds_nd(pred_field: np.ndarray, inv_width: np.ndarray)
 def _prepare_interval_signal(
     pred_signal: np.ndarray,
     kernel: np.ndarray,
-    qhat: float,
+    qhat,
     slicing: IntervalFFTSlicing,
 ) -> tuple[list, np.ndarray]:
     signal_padded = np.concatenate(([0.0], pred_signal, [0.0]))
@@ -125,9 +146,23 @@ def _prepare_interval_signal(
     right_edges = convolved[: slicing.n_right_edges]
     left_edge = convolved[-1]
 
-    center_set = [interval([x.real - qhat, x.real + qhat]) for x in center]
-    right_set = [interval([x.real - qhat, x.real + qhat]) for x in right_edges]
-    left_set = [interval([left_edge.real - qhat, left_edge.real + qhat])]
+    # qhat may be scalar or per-point array; pad to match the padded signal length
+    qhat_np = np.asarray(qhat, dtype=float)
+    if qhat_np.ndim == 0:
+        qhat_arr = np.full(len(signal_padded), float(qhat_np))
+    else:
+        # Pad with edge values to match signal_padded length (which has +2 from zero-padding)
+        pad_total = len(signal_padded) - len(qhat_np)
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        qhat_arr = np.pad(qhat_np, (pad_left, pad_right), mode='edge')
+    q_center = qhat_arr[slicing.center_start : slicing.center_end]
+    q_right = qhat_arr[: slicing.n_right_edges]
+    q_left = qhat_arr[-1]
+
+    center_set = [interval([x.real - q, x.real + q]) for x, q in zip(center, q_center)]
+    right_set = [interval([x.real - q, x.real + q]) for x, q in zip(right_edges, q_right)]
+    left_set = [interval([left_edge.real - q_left, left_edge.real + q_left])]
 
     return right_set + center_set + left_set, kernel_fft
 
@@ -135,7 +170,7 @@ def _prepare_interval_signal(
 def intervalfft_inversion_bounds_1d(
     pred_signal: np.ndarray,
     kernel: np.ndarray,
-    qhat: float,
+    qhat,
     output_size: int,
     *,
     slicing: IntervalFFTSlicing = IntervalFFTSlicing(),
@@ -159,7 +194,7 @@ def intervalfft_inversion_bounds_1d(
 def intervalfft_slice_inversion_bounds_1d(
     pred_signal: np.ndarray,
     kernel: np.ndarray,
-    qhat: float,
+    qhat,
     output_size: Optional[int] = None,
     *,
     prepad_repeat: int = 3,
@@ -177,7 +212,15 @@ def intervalfft_slice_inversion_bounds_1d(
     kernel_pad = np.roll(kernel_pad, -1)
 
     conv_signal = ifft(fft(signal_padded) * fft(kernel_pad))
-    conv_set = [interval([x.real - qhat, x.real + qhat]) for x in conv_signal]
+    qhat_np = np.asarray(qhat, dtype=float)
+    if qhat_np.ndim == 0:
+        qhat_arr = np.full(len(conv_signal), float(qhat_np))
+    else:
+        pad_total = len(conv_signal) - len(qhat_np)
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        qhat_arr = np.pad(qhat_np, (pad_left, pad_right), mode='edge')
+    conv_set = [interval([x.real - q, x.real + q]) for x, q in zip(conv_signal, qhat_arr)]
 
     padded_set = [conv_set[0]] * prepad_repeat + conv_set + [conv_set[-1]] * postpad_repeat
     inverse_kernel = 1.0 / (fft(np.concatenate((kernel, np.zeros(len(padded_set) - len(kernel))))) + eps)
@@ -196,7 +239,7 @@ def intervalfft_slice_inversion_bounds_1d(
 def invert_residual_bounds_1d(
     pred_signal: np.ndarray,
     kernel: np.ndarray,
-    qhat: float,
+    qhat,
     operator,
     *,
     interior_slice: slice = slice(1, -1),
@@ -236,12 +279,13 @@ def _trajectory_coverage_1d(truth: np.ndarray, bounds: InversionBounds1D) -> flo
 def perturbation_bounds_1d(
     pred_signal: np.ndarray,
     residual_operator,
-    qhat: float,
+    qhat,
     *,
     interior_slice: slice = slice(1, -1),
     config: PerturbationSamplingConfig = PerturbationSamplingConfig(),
     fallback_lower: Optional[np.ndarray] = None,
     fallback_upper: Optional[np.ndarray] = None,
+    joint: bool = False,
 ) -> InversionBounds1D:
     pred_signal = np.asarray(pred_signal, dtype=np.float32)
     pred_tensor = torch.tensor(pred_signal, dtype=torch.float32).unsqueeze(0)
@@ -310,7 +354,17 @@ def perturbation_bounds_1d(
 
             perturbed = pred_tensor + noise
             residuals = residual_operator(perturbed)
-            within = torch.abs(residuals) <= abs(float(qhat))
+            if np.ndim(qhat) == 0:
+                within = torch.abs(residuals) <= abs(float(qhat))
+            else:
+                qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64),
+                                      dtype=torch.float32, device=pred_tensor.device)
+                within = torch.abs(residuals) <= qhat_t.unsqueeze(0)
+
+            if joint:
+                # Accept/reject entire trajectories — joint coverage guarantee
+                traj_ok = within.all(dim=1, keepdim=True)   # [B, 1]
+                within = traj_ok.expand_as(within)
 
             pred_slice = perturbed[:, interior_slice]
             mask_slice = within[:, interior_slice]
@@ -361,6 +415,7 @@ def empirical_coverage_curve_1d(
     intervalfft_slicing: IntervalFFTSlicing = IntervalFFTSlicing(),
     integrate_slice_pad: bool = False,
     perturbation_config: Optional[PerturbationSamplingConfig] = None,
+    cp_mode: str = "marginal",
 ) -> CoverageResult:
     nominal = []
     cov_point = []
@@ -369,9 +424,14 @@ def empirical_coverage_curve_1d(
 
     preds = np.asarray(preds, dtype=float)
     truths = np.asarray(truths, dtype=float)
+    joint = cp_mode == "joint"
 
     for alpha in tqdm(alphas, desc="Coverage alphas", unit="α"):
-        qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
+        if joint:
+            qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=float(alpha))
+            qhat = qhat_scalar * modulation
+        else:
+            qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
         point_cover_flags = []
         interval_cover_flags = []
 
@@ -395,6 +455,7 @@ def empirical_coverage_curve_1d(
                     qhat=qhat,
                     interior_slice=interior_slice,
                     config=perturbation_config,
+                    joint=joint,
                 )
                 cov_perturb.append(_trajectory_coverage_1d(truth_i[None, :], perturb_bounds))
 

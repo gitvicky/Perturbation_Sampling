@@ -36,6 +36,7 @@ from Inversion_Strategies.inversion.residual_inversion import (
     IntervalFFTSlicing,
     PerturbationSamplingConfig,
     calibrate_qhat_from_residual,
+    calibrate_qhat_joint_from_residual,
     empirical_coverage_curve_1d,
     invert_residual_bounds_1d,
     perturbation_bounds_1d,
@@ -169,7 +170,7 @@ def _save_coverage_plot_nonlinear(case_name, nominal, empirical_perturbation, sa
 
 def _perturbation_coverage_curve(
     preds, truths, residual_cal, residual_operator, *,
-    alphas, interior_slice, perturbation_config,
+    alphas, interior_slice, perturbation_config, cp_mode="marginal",
 ):
     """Compute empirical coverage curve using perturbation sampling only.
 
@@ -181,12 +182,17 @@ def _perturbation_coverage_curve(
     )
     nominal = []
     cov_perturb = []
+    joint = cp_mode == "joint"
 
     preds = np.asarray(preds, dtype=float)
     truths = np.asarray(truths, dtype=float)
 
     for alpha in tqdm(alphas, desc="Coverage alphas", unit="α"):
-        qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
+        if joint:
+            qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=float(alpha))
+            qhat = qhat_scalar * modulation
+        else:
+            qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
         cover_flags = []
 
         for i in tqdm(range(preds.shape[0]),
@@ -198,6 +204,7 @@ def _perturbation_coverage_curve(
                 qhat=qhat,
                 interior_slice=interior_slice,
                 config=perturbation_config,
+                joint=joint,
             )
             truth_i = truths[i][interior_slice]
             cover_flags.append(
@@ -210,10 +217,10 @@ def _perturbation_coverage_curve(
     return np.asarray(nominal), np.asarray(cov_perturb)
 
 
-def run_sho(transductive=False, noise_type="spatial"):
+def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal"):
     """Simple Harmonic Oscillator: m*x'' + k*x = 0"""
     from Expts.SHO.SHO_NODE import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type})...")
+    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode})...")
 
     # --- 1. Train Neural ODE ---
     m, k = 1.0, 1.0
@@ -226,7 +233,7 @@ def run_sho(transductive=False, noise_type="spatial"):
         oscillator, t_span, n_points, n_trajectories)
 
     func = ODEFunc(hidden_dim=64)
-    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    train_neural_ode(func, t_train, states, derivs, n_epochs=250, batch_size=16)
 
     t, numerical_sol, neural_sol = evaluate(
         oscillator, func, t_span, n_points, x_range=(-2,2), v_range=(-2,2), n_solves=100)
@@ -252,8 +259,14 @@ def run_sho(transductive=False, noise_type="spatial"):
         residual_cal = res[:n_cal]   # calibration set (80%)
         test_idx = n_cal             # first held-out sample
 
-    qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
-    print(f"  [1/5] Calibrated qhat = {qhat:.4f}")
+    joint = cp_mode == "joint"
+    if joint:
+        qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=0.1)
+        qhat = qhat_scalar * modulation
+        print(f"  [1/5] Joint calibrated qhat_scalar = {qhat_scalar:.4f}, modulation range = [{modulation.min():.4f}, {modulation.max():.4f}]")
+    else:
+        qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
+        print(f"  [1/5] Calibrated qhat = {qhat:.4f}")
 
     # --- 4. Invert bounds (all three methods) ---
     print("  [2/5] Point-wise + Interval FFT inversion...")
@@ -276,6 +289,7 @@ def run_sho(transductive=False, noise_type="spatial"):
         qhat=qhat,
         interior_slice=slice(1, -1),
         config=perturb_cfg,
+        joint=joint,
     )
     print(f"  [3/5] Perturbation sampling inversion ({noise_type})... done")
 
@@ -341,15 +355,17 @@ def run_sho(transductive=False, noise_type="spatial"):
         intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
         integrate_slice_pad=False,
         perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
     )
-    _save_coverage_plot("SHO", sho_coverage, "sho_coverage_comparison.png")
+    suffix = f"_{'joint' if joint else 'marginal'}"
+    _save_coverage_plot(f"SHO ({cp_mode})", sho_coverage, f"sho_coverage_comparison{suffix}.png")
     print("  SHO experiment complete.\n")
 
 
-def run_dho(transductive=False, noise_type="spatial"):
+def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal"):
     """Damped Harmonic Oscillator: m*x'' + c*x' + k*x = 0"""
     from Expts.DHO.DHO_NODE import DampedHarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type})...")
+    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode})...")
 
     # --- 1. Train Neural ODE ---
     m, k, c = 1.0, 1.0, 0.2
@@ -363,7 +379,7 @@ def run_dho(transductive=False, noise_type="spatial"):
         oscillator, t_span, n_points, n_trajectories)
 
     func = ODEFunc(hidden_dim=64)
-    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    train_neural_ode(func, t_train, states, derivs, n_epochs=250, batch_size=16)
 
     t, numerical_sol, neural_sol = evaluate(
         oscillator, func, t_span, n_points, x_range=(-2,2), v_range=(-2,2), n_solves=100)
@@ -390,8 +406,14 @@ def run_dho(transductive=False, noise_type="spatial"):
         residual_cal = res[:n_cal]   # calibration set (80%)
         test_idx = n_cal             # first held-out sample
 
-    qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
-    print(f"  [1/5] Calibrated qhat = {qhat:.4f}")
+    joint = cp_mode == "joint"
+    if joint:
+        qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=0.1)
+        qhat = qhat_scalar * modulation
+        print(f"  [1/5] Joint calibrated qhat_scalar = {qhat_scalar:.4f}, modulation range = [{modulation.min():.4f}, {modulation.max():.4f}]")
+    else:
+        qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
+        print(f"  [1/5] Calibrated qhat = {qhat:.4f}")
 
     # --- 4. Invert bounds (all three methods) ---
     print("  [2/5] Point-wise + Interval FFT inversion...")
@@ -414,6 +436,7 @@ def run_dho(transductive=False, noise_type="spatial"):
         qhat=qhat,
         interior_slice=slice(1, -1),
         config=perturb_cfg,
+        joint=joint,
     )
     print(f"  [3/5] Perturbation sampling inversion ({noise_type})... done")
 
@@ -480,18 +503,20 @@ def run_dho(transductive=False, noise_type="spatial"):
         intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
         integrate_slice_pad=False,
         perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
     )
-    _save_coverage_plot("DHO", dho_coverage, "dho_coverage_comparison.png")
+    suffix = f"_{'joint' if joint else 'marginal'}"
+    _save_coverage_plot(f"DHO ({cp_mode})", dho_coverage, f"dho_coverage_comparison{suffix}.png")
     print("  DHO experiment complete.\n")
 
 
-def run_pendulum(transductive=False, noise_type="spatial"):
+def run_pendulum(transductive=False, noise_type="spatial", cp_mode="marginal"):
     """Nonlinear Pendulum: x'' + (g/L)*sin(x) = 0"""
     from Expts.Pendulum.Pendulum_NODE import (
         NonlinearPendulum, NonlinearPendulumResidualOperator,
         ODEFunc, generate_training_data, train_neural_ode, evaluate,
     )
-    print(f"Running Pendulum Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type})...")
+    print(f"Running Pendulum Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode})...")
 
     # --- 1. Train Neural ODE ---
     g, L = 9.81, 9.81   # g/L = 1.0 for unit natural frequency
@@ -531,8 +556,14 @@ def run_pendulum(transductive=False, noise_type="spatial"):
         residual_cal = res[:n_cal]
         test_idx = n_cal
 
-    qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
-    print(f"  [1/4] Calibrated qhat = {qhat:.4f}")
+    joint = cp_mode == "joint"
+    if joint:
+        qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=0.1)
+        qhat = qhat_scalar * modulation
+        print(f"  [1/4] Joint calibrated qhat_scalar = {qhat_scalar:.4f}, modulation range = [{modulation.min():.4f}, {modulation.max():.4f}]")
+    else:
+        qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
+        print(f"  [1/4] Calibrated qhat = {qhat:.4f}")
 
     # --- 4. Invert bounds (perturbation sampling only) ---
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})...")
@@ -543,6 +574,7 @@ def run_pendulum(transductive=False, noise_type="spatial"):
         qhat=qhat,
         interior_slice=slice(1, -1),
         config=perturb_cfg,
+        joint=joint,
     )
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})... done")
 
@@ -587,19 +619,21 @@ def run_pendulum(transductive=False, noise_type="spatial"):
         alphas=alpha_levels,
         interior_slice=slice(1, -1),
         perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
     )
-    _save_coverage_plot_nonlinear("Pendulum", nominal, emp_perturb,
-                                  "pendulum_coverage_comparison.png")
+    suffix = f"_{'joint' if joint else 'marginal'}"
+    _save_coverage_plot_nonlinear(f"Pendulum ({cp_mode})", nominal, emp_perturb,
+                                  f"pendulum_coverage_comparison{suffix}.png")
     print("  Pendulum experiment complete.\n")
 
 
-def run_duffing(transductive=False, noise_type="spatial"):
+def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal"):
     """Duffing Oscillator: x'' + delta*x' + alpha*x + beta*x^3 = 0"""
     from Expts.Duffing.Duffing_NODE import (
         DuffingOscillator, DuffingResidualOperator,
         ODEFunc, generate_training_data, train_neural_ode, evaluate,
     )
-    print(f"Running Duffing Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type})...")
+    print(f"Running Duffing Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode})...")
 
     # --- 1. Train Neural ODE ---
     alpha_coeff, beta_coeff, delta_coeff = 1.0, 0.5, 0.2
@@ -613,7 +647,7 @@ def run_duffing(transductive=False, noise_type="spatial"):
         oscillator, t_span, n_points, n_trajectories)
 
     func = ODEFunc(hidden_dim=64)
-    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    train_neural_ode(func, t_train, states, derivs, n_epochs=250, batch_size=16)
 
     t, numerical_sol, neural_sol = evaluate(
         oscillator, func, t_span, n_points,
@@ -639,8 +673,14 @@ def run_duffing(transductive=False, noise_type="spatial"):
         residual_cal = res[:n_cal]
         test_idx = n_cal
 
-    qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
-    print(f"  [1/4] Calibrated qhat = {qhat:.4f}")
+    joint = cp_mode == "joint"
+    if joint:
+        qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=0.1)
+        qhat = qhat_scalar * modulation
+        print(f"  [1/4] Joint calibrated qhat_scalar = {qhat_scalar:.4f}, modulation range = [{modulation.min():.4f}, {modulation.max():.4f}]")
+    else:
+        qhat = calibrate_qhat_from_residual(residual_cal, alpha=0.1)
+        print(f"  [1/4] Calibrated qhat = {qhat:.4f}")
 
     # --- 4. Invert bounds (perturbation sampling only) ---
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})...")
@@ -651,6 +691,7 @@ def run_duffing(transductive=False, noise_type="spatial"):
         qhat=qhat,
         interior_slice=slice(1, -1),
         config=perturb_cfg,
+        joint=joint,
     )
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})... done")
 
@@ -695,16 +736,18 @@ def run_duffing(transductive=False, noise_type="spatial"):
         alphas=alpha_levels,
         interior_slice=slice(1, -1),
         perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
     )
-    _save_coverage_plot_nonlinear("Duffing", nominal, emp_perturb,
-                                  "duffing_coverage_comparison.png")
+    suffix = f"_{'joint' if joint else 'marginal'}"
+    _save_coverage_plot_nonlinear(f"Duffing ({cp_mode})", nominal, emp_perturb,
+                                  f"duffing_coverage_comparison{suffix}.png")
     print("  Duffing experiment complete.\n")
 
 
 EXPERIMENTS = {
     'sho': run_sho,
     'dho': run_dho,
-    'pendulum': run_pendulum,
+    # 'pendulum': run_pendulum,
     'duffing': run_duffing,
 }
 
@@ -725,9 +768,14 @@ if __name__ == '__main__':
         '--noise-type', default='spatial', choices=NOISE_TYPES,
         help=f'Noise model for perturbation sampling (default: spatial). Choices: {", ".join(NOISE_TYPES)}',
     )
+    CP_MODES = ("marginal", "joint")
+    parser.add_argument(
+        '--cp-mode', default='marginal', choices=CP_MODES,
+        help=f'Conformal prediction mode (default: marginal). Choices: {", ".join(CP_MODES)}',
+    )
     args = parser.parse_args()
 
     for name in args.experiments:
-        EXPERIMENTS[name](transductive=args.transductive, noise_type=args.noise_type)
+        EXPERIMENTS[name](transductive=args.transductive, noise_type=args.noise_type, cp_mode=args.cp_mode)
 
 # %%
