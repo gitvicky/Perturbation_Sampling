@@ -267,7 +267,6 @@ def evaluate(oscillator, neural_ode, t_span, n_points, x_range, v_range, n_solve
             np.asarray(num_solns),
             np.asarray(neural_solns))
 
-
 def plot_comparison(t, numerical_sol, neural_sol):
     """
     Plot comparison between numerical and neural ODE solutions.
@@ -331,7 +330,6 @@ if __name__ == "__main__":
     x = torch.tensor(soln[:, 0], dtype=torch.float32).unsqueeze(0)
     v = torch.tensor(soln[:, 1], dtype=torch.float32).unsqueeze(0)
 
-
     from Utils.PRE.ConvOps_0d import ConvOperator
     dt = t[1]-t[0]
     D_t = ConvOperator(order=1)#, scale=alpha)
@@ -359,7 +357,6 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True)
 
-
     # #Velocity Residual 
     # plt.figure()
     # plt.plot(t[1:-1], D_vel(v)[0,1:-1], 'b-', label='velocity_residual')
@@ -368,7 +365,6 @@ if __name__ == "__main__":
     # plt.title('Velocity Residual')
     # plt.legend()
     # plt.grid(True)
-
 
     # %%
     #Performing PRE-CP
@@ -439,7 +435,6 @@ if __name__ == "__main__":
     # plt.title('PRE-CP-inverse : Position')
     # plt.legend()
     # plt.grid(True)
-
 
     # %%
     plt.figure()

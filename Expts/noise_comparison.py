@@ -1,13 +1,13 @@
 """
 Noise method comparison for perturbation sampling inversion.
 
-Runs perturbation sampling with every available noise strategy on both
-SHO and DHO cases, producing:
+Runs perturbation sampling with every available noise strategy on
+SHO, DHO, and Duffing cases, producing:
   - A multi-panel bounds comparison plot (one subplot per noise method)
   - (optional) An empirical coverage curve comparing all noise methods
 
 Usage:
-  python Expts/noise_comparison.py                   # both cases, bounds only
+  python Expts/noise_comparison.py                   # all cases, bounds only
   python Expts/noise_comparison.py sho               # SHO only
   python Expts/noise_comparison.py --coverage         # include coverage curves
   python Expts/noise_comparison.py --coverage --alpha-steps 5   # fewer alpha levels (faster)
@@ -26,10 +26,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Utils.PRE.ConvOps_0d import ConvOperator
 from Inversion_Strategies.inversion.residual_inversion import (
-    IntervalFFTSlicing,
     PerturbationSamplingConfig,
     calibrate_qhat_from_residual,
-    invert_residual_bounds_1d,
     perturbation_bounds_1d,
 )
 
@@ -106,13 +104,15 @@ def _style_ax(ax):
     ax.tick_params(direction='out', length=4, width=0.6)
 
 
-def _build_config(method_key, composite_kernel, seed=123):
+def _build_config(method_key, pre_kernel=None, seed=123):
     """Build a PerturbationSamplingConfig for a given noise method key."""
     kw = dict(NOISE_METHODS[method_key]["config_kw"])
     common = dict(n_samples=4000, batch_size=1000, max_rounds=2, noise_std=0.10, seed=seed)
 
     if method_key == "pre_correlated":
-        kw["pre_kernel"] = composite_kernel.clone()
+        if pre_kernel is None:
+            raise ValueError("pre_correlated noise requires a pre_kernel.")
+        kw["pre_kernel"] = pre_kernel.clone()
 
     return PerturbationSamplingConfig(**common, **kw)
 
@@ -150,10 +150,9 @@ def _setup_sho():
     return dict(
         case_name="SHO", t=t, pos=pos, numerical_sol=numerical_sol, neural_sol=neural_sol,
         operator=D_pos, residual_cal=residual_cal, test_idx=test_idx,
+        pre_kernel=D_pos.kernel,
         interior_slice=slice(1, -1),
-        intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
     )
-
 
 def _setup_dho():
     """Train DHO Neural ODE and return everything needed for inversion."""
@@ -185,13 +184,42 @@ def _setup_dho():
     return dict(
         case_name="DHO", t=t, pos=pos, numerical_sol=numerical_sol, neural_sol=neural_sol,
         operator=D_damped, residual_cal=residual_cal, test_idx=test_idx,
+        pre_kernel=D_damped.kernel,
         interior_slice=slice(1, -1),
-        intervalfft_slicing=IntervalFFTSlicing(center_start=3, center_end=-1, n_right_edges=3, output_offset=2),
     )
 
+def _setup_duffing():
+    """Train Duffing Neural ODE and return everything needed for inversion."""
+    from Expts.Duffing.Duffing_NODE import (
+        DuffingOscillator, DuffingResidualOperator,
+        ODEFunc, generate_training_data, train_neural_ode, evaluate,
+    )
 
-CASE_BUILDERS = {"sho": _setup_sho, "dho": _setup_dho}
+    alpha_coeff, beta_coeff, delta_coeff = 1.0, 0.5, 0.2
+    oscillator = DuffingOscillator(alpha_coeff, beta_coeff, delta_coeff)
+    t_train, states, derivs = generate_training_data(oscillator, (0, 15), 100, 50)
+    func = ODEFunc(hidden_dim=64)
+    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    t, numerical_sol, neural_sol = evaluate(oscillator, func, (0, 15), 100,
+                                            x_range=(-2, 2), v_range=(-2, 2), n_solves=100)
 
+    pos = torch.tensor(neural_sol[..., 0], dtype=torch.float32)
+    dt = t[1] - t[0]
+    residual_op = DuffingResidualOperator(alpha_coeff, beta_coeff, delta_coeff, dt)
+
+    res = residual_op(pos)
+    n_cal = int(0.8 * len(res))
+    residual_cal = res[:n_cal]
+    test_idx = n_cal
+
+    return dict(
+        case_name="Duffing", t=t, pos=pos, numerical_sol=numerical_sol, neural_sol=neural_sol,
+        operator=residual_op, residual_cal=residual_cal, test_idx=test_idx,
+        pre_kernel=residual_op.D_linear.kernel,
+        interior_slice=slice(1, -1),
+    )
+
+CASE_BUILDERS = {"sho": _setup_sho, "dho": _setup_dho, "duffing": _setup_duffing}
 
 # ---------------------------------------------------------------------------
 # Bounds comparison
@@ -204,8 +232,8 @@ def run_bounds_comparison(setup, methods):
     pos = setup["pos"]
     test_idx = setup["test_idx"]
     operator = setup["operator"]
+    pre_kernel = setup["pre_kernel"]
     interior = setup["interior_slice"]
-    slicing = setup["intervalfft_slicing"]
     residual_cal = setup["residual_cal"]
     numerical_sol = setup["numerical_sol"]
 
@@ -217,11 +245,6 @@ def run_bounds_comparison(setup, methods):
     print(f"  qhat = {qhat:.4f}")
 
     # Reference bounds (point-wise + interval FFT) — computed once
-    point_bounds, interval_bounds = invert_residual_bounds_1d(
-        pred_signal=pred_np, kernel=operator.kernel.numpy(), qhat=qhat,
-        operator=operator, interior_slice=interior,
-        intervalfft_slicing=slicing, integrate_slice_pad=False,
-    )
 
     # Perturbation bounds per noise method
     perturb_results = {}
@@ -229,7 +252,7 @@ def run_bounds_comparison(setup, methods):
         label = NOISE_METHODS[key]["label"]
         print(f"  Perturbation sampling: {label} ...", end=" ", flush=True)
         t0 = time.time()
-        cfg = _build_config(key, operator.kernel, seed=123)
+        cfg = _build_config(key, pre_kernel=pre_kernel, seed=123)
         bounds = perturbation_bounds_1d(
             pred_signal=pred_np, residual_operator=operator,
             qhat=qhat, interior_slice=interior, config=cfg,
@@ -253,14 +276,6 @@ def run_bounds_comparison(setup, methods):
         sty = NOISE_STYLES[key]
 
         # Interval FFT reference (light background)
-        ax.fill_between(tt, interval_bounds.lower, interval_bounds.upper,
-                        color=PALETTE['intervalfft'], alpha=0.10, zorder=1)
-
-        # Point-wise reference (thin dashed grey)
-        ax.plot(tt, point_bounds.lower, color=PALETTE['pointwise'],
-                ls='--', lw=0.8, alpha=0.6, zorder=2)
-        ax.plot(tt, point_bounds.upper, color=PALETTE['pointwise'],
-                ls='--', lw=0.8, alpha=0.6, zorder=2)
 
         # Perturbation bounds (this method)
         ax.fill_between(tt, bounds.lower, bounds.upper,
@@ -287,36 +302,25 @@ def run_bounds_comparison(setup, methods):
         r, c = divmod(idx, ncols)
         axes[r][c].set_visible(False)
 
-    # Shared legend
     legend_handles = [
-        Line2D([], [], color=PALETTE['intervalfft'], alpha=0.4, lw=6, label='Interval FFT'),
-        Line2D([], [], color=PALETTE['pointwise'], ls='--', lw=1, label='Point-wise'),
         Line2D([], [], color='grey', lw=1.5, label='Perturbation bound'),
         Line2D([], [], color=PALETTE['prediction'], lw=1.4, label='Prediction'),
         Line2D([], [], color=PALETTE['truth'], lw=1.2, marker='.', markersize=4, label='Ground truth'),
     ]
-    fig.legend(handles=legend_handles, loc='lower center', ncol=5,
-               frameon=True, edgecolor='#DDDDDD', fontsize=9,
-               bbox_to_anchor=(0.5, -0.02))
-
-    fig.suptitle(f'{case}: Perturbation Bounds by Noise Method (90% target)', fontsize=13)
-    fig.tight_layout(rect=[0, 0.04, 1, 0.96])
+    fig.legend(handles=legend_handles, loc='upper center', ncol=3, frameon=False)
+    fig.suptitle(f'{case}: Bounds by Noise Method (90% target)', y=0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
 
     save_dir = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images')
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f'{case.lower()}_noise_bounds_comparison.png')
     fig.savefig(save_path)
     plt.close(fig)
-    print(f"  Saved bounds plot: {save_path}")
+    print(f"  Saved bounds comparison: {save_path}")
 
     # --- Overlay plot: all methods on one axis ---
     fig2, ax2 = plt.subplots(figsize=(10, 6))
     _style_ax(ax2)
-
-    # Interval FFT reference
-    ax2.fill_between(tt, interval_bounds.lower, interval_bounds.upper,
-                     color=PALETTE['intervalfft'], alpha=0.10, zorder=1,
-                     label='Interval FFT')
 
     for key in methods:
         bounds = perturb_results[key]
@@ -343,7 +347,6 @@ def run_bounds_comparison(setup, methods):
 
     return perturb_results
 
-
 # ---------------------------------------------------------------------------
 # Coverage comparison
 # ---------------------------------------------------------------------------
@@ -351,25 +354,20 @@ def run_bounds_comparison(setup, methods):
 def run_coverage_comparison(setup, methods, alpha_steps=10):
     """Compute empirical coverage for each noise method and plot comparison."""
     case = setup["case_name"]
-    pos = setup["pos"]
     operator = setup["operator"]
+    pre_kernel = setup["pre_kernel"]
     interior = setup["interior_slice"]
-    slicing = setup["intervalfft_slicing"]
     residual_cal = setup["residual_cal"]
     numerical_sol = setup["numerical_sol"]
     neural_sol = setup["neural_sol"]
 
     preds = neural_sol[..., 0]
     truths = numerical_sol[..., 0]
-    kernel_np = operator.kernel.numpy()
 
     alphas = np.linspace(0.05, 0.95, alpha_steps)
     nominal = 1.0 - alphas
     n_traj = preds.shape[0]
 
-    # Compute point-wise and interval FFT coverage once
-    cov_point = np.zeros(len(alphas))
-    cov_interval = np.zeros(len(alphas))
     # Storage for each noise method's perturbation coverage
     cov_perturb = {key: np.zeros(len(alphas)) for key in methods}
 
@@ -377,25 +375,14 @@ def run_coverage_comparison(setup, methods, alpha_steps=10):
         qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
         print(f"  alpha={alpha:.2f} (qhat={qhat:.4f}) ...", end=" ", flush=True)
 
-        point_flags = []
-        interval_flags = []
         perturb_flags = {key: [] for key in methods}
 
         for i in range(n_traj):
             truth_i = truths[i][interior]
 
-            # Point-wise + interval FFT (computed once per trajectory)
-            pb, ib = invert_residual_bounds_1d(
-                pred_signal=preds[i], kernel=kernel_np, qhat=qhat,
-                operator=operator, interior_slice=interior,
-                intervalfft_slicing=slicing, integrate_slice_pad=False,
-            )
-            point_flags.append(float(np.all((truth_i >= pb.lower) & (truth_i <= pb.upper))))
-            interval_flags.append(float(np.all((truth_i >= ib.lower) & (truth_i <= ib.upper))))
-
             # Perturbation for each noise method
             for key in methods:
-                cfg = _build_config(key, operator.kernel, seed=123)
+                cfg = _build_config(key, pre_kernel=pre_kernel, seed=123 + i)
                 try:
                     prb = perturbation_bounds_1d(
                         pred_signal=preds[i], residual_operator=operator,
@@ -406,8 +393,6 @@ def run_coverage_comparison(setup, methods, alpha_steps=10):
                     contained = 0.0
                 perturb_flags[key].append(contained)
 
-        cov_point[ai] = np.mean(point_flags)
-        cov_interval[ai] = np.mean(interval_flags)
         for key in methods:
             cov_perturb[key][ai] = np.mean(perturb_flags[key])
         print("done")
@@ -420,12 +405,6 @@ def run_coverage_comparison(setup, methods, alpha_steps=10):
     ax.plot(nominal, nominal, color=PALETTE['target'], lw=1.8, ls=':',
             label='Target', zorder=1)
     ax.fill_between(nominal, 0, nominal, color=PALETTE['target'], alpha=0.06, zorder=0)
-
-    # Point-wise + Interval FFT
-    ax.plot(nominal, cov_point, color=PALETTE['pointwise'], lw=2.0, ls='--',
-            marker='s', markersize=4, markeredgewidth=0, label='Point-wise', zorder=2)
-    ax.plot(nominal, cov_interval, color=PALETTE['intervalfft'], lw=2.2,
-            marker='o', markersize=5, markeredgewidth=0, label='Interval FFT', zorder=2)
 
     # Each noise method
     markers = ['D', '^', 'v', '<', '>', 'p']
@@ -448,7 +427,6 @@ def run_coverage_comparison(setup, methods, alpha_steps=10):
     plt.close(fig)
     print(f"  Saved coverage plot: {save_path}")
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -457,8 +435,8 @@ def main():
     parser = argparse.ArgumentParser(
         description='Compare perturbation sampling noise methods for residual bound inversion.')
     parser.add_argument(
-        'cases', nargs='*', default=['sho', 'dho'], choices=['sho', 'dho'],
-        help='Which ODE cases to run (default: both)')
+        'cases', nargs='*', default=['sho', 'dho', 'duffing'], choices=['sho', 'dho', 'duffing'],
+        help='Which ODE cases to run (default: all)')
     parser.add_argument(
         '--coverage', action='store_true',
         help='Also compute empirical coverage curves (slow)')
@@ -487,7 +465,6 @@ def main():
             run_coverage_comparison(setup, args.methods, alpha_steps=args.alpha_steps)
 
     print("\nDone.")
-
 
 if __name__ == '__main__':
     main()

@@ -1,35 +1,39 @@
 from dataclasses import dataclass
-from typing import Optional, Sequence
-import os
-import sys
-
+from typing import Optional, Sequence, Union
 import numpy as np
 import torch
-from interval import interval
-from scipy.fft import fft, ifft
+import torch.nn as nn
+import torch.optim as optim
 from tqdm import tqdm
 
-_INTERVALFFT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "intervalFFT"))
-if _INTERVALFFT_DIR not in sys.path:
-    sys.path.append(_INTERVALFFT_DIR)
-
-from intervalFFT import Real, complex_prod, intervalFFT, inverse_intervalFFT
 from Neural_PDE.UQ.inductive_cp import calibrate
-from Utils.noise_gen import PDENoiseGenerator1D
+from Utils.noise_gen import PDENoiseGenerator, PDENoiseGenerator1D
 
 @dataclass(frozen=True)
-class InversionBounds1D:
+class InversionBounds:
     lower: np.ndarray
     upper: np.ndarray
     width: np.ndarray
 
 
-@dataclass(frozen=True)
-class IntervalFFTSlicing:
-    center_start: int = 3
-    center_end: int = -1
-    n_right_edges: int = 3
-    output_offset: int = 2
+class BoundaryGenerator(nn.Module):
+    def __init__(self, input_shape: tuple[int, ...], hidden_dim: int = 128):
+        super().__init__()
+        self.input_shape = input_shape
+        self.n_flat = int(np.prod(input_shape))
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.n_flat, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.n_flat)
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        # z: [batch, n_flat]
+        out = self.net(z)
+        return out.view(-1, *self.input_shape)
 
 
 @dataclass(frozen=True)
@@ -47,12 +51,27 @@ class PerturbationSamplingConfig:
     seed: Optional[int] = None
     std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125, 0.0625)
 
+    # Method 1 & 2: Advanced Sampling
+    use_optimisation: bool = False
+    use_mcmc: bool = False
+    mcmc_steps: int = 50
+    mcmc_step_size: float = 1e-3
+    mcmc_noise_scale: float = 1e-4
+    opt_steps: int = 50
+    opt_lr: float = 1e-2
+    lambda_prior: float = 1e-3
+    lambda_boundary: float = 1.0
+
+    # Method 3: Generative Modeling
+    use_generator: bool = False
+    gen_train_steps: int = 500
+    gen_lr: float = 1e-3
+    gen_hidden_dim: int = 128
+
 
 @dataclass(frozen=True)
 class CoverageResult:
     nominal_coverage: np.ndarray
-    empirical_coverage_pointwise: np.ndarray
-    empirical_coverage_intervalfft: np.ndarray
     empirical_coverage_perturbation: Optional[np.ndarray] = None
 
 
@@ -79,231 +98,98 @@ def calibrate_qhat_joint_from_residual(
     return qhat, modulation
 
 
-def pointwise_inverse_width(
+def train_boundary_generator(
+    pred_tensor: torch.Tensor,
     operator,
-    n_points: int,
     qhat,
-    *,
-    dtype: torch.dtype = torch.float32,
-    device: Optional[torch.device] = None,
-    slice_pad: bool = False,
-) -> np.ndarray:
-    if np.ndim(qhat) == 0:
-        qhat_tensor = torch.full((1, n_points), float(qhat), dtype=dtype, device=device)
-    else:
-        qhat_tensor = torch.tensor(np.asarray(qhat, dtype=np.float64), dtype=dtype, device=device).unsqueeze(0)
-    inv_qhat = operator.integrate(qhat_tensor, slice_pad=slice_pad)[0]
-    return np.abs(inv_qhat.detach().cpu().numpy())
+    config: PerturbationSamplingConfig
+) -> nn.Module:
+    input_shape = pred_tensor.shape[1:]
+    n_flat = int(np.prod(input_shape))
+    generator = BoundaryGenerator(input_shape, config.gen_hidden_dim).to(pred_tensor.device)
+    optimizer = optim.Adam(generator.parameters(), lr=config.gen_lr)
+    
+    qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64), 
+                          dtype=torch.float32, device=pred_tensor.device).abs()
+    if qhat_t.ndim > 0:
+        qhat_t = qhat_t.unsqueeze(0)
+
+    generator.train()
+    for _ in range(config.gen_train_steps):
+        optimizer.zero_grad()
+        z = torch.randn(config.batch_size, n_flat, device=pred_tensor.device)
+        noise = generator(z)
+        
+        p_gen = pred_tensor + noise
+        r_gen = operator(p_gen)
+        
+        diff = torch.abs(r_gen) - qhat_t
+        l_bound = torch.mean(torch.clamp(diff, min=0)**2)
+        l_prior = torch.mean(noise**2)
+        
+        loss = config.lambda_boundary * l_bound + config.lambda_prior * l_prior
+        loss.backward()
+        optimizer.step()
+        
+    generator.eval()
+    return generator
 
 
-def pointwise_inversion_bounds_1d(
-    pred_signal: np.ndarray,
-    inv_width: np.ndarray,
-    *,
-    interior_slice: slice = slice(1, -1),
-) -> InversionBounds1D:
-    center = np.asarray(pred_signal[interior_slice], dtype=float)
-    width = np.asarray(inv_width[interior_slice], dtype=float)
-    lower = center - width
-    upper = center + width
-    return InversionBounds1D(lower=lower, upper=upper, width=width)
-
-
-def pointwise_inverse_width_nd(
-    operator,
-    field_shape: Sequence[int],
-    qhat: float,
-    *,
-    dtype: torch.dtype = torch.float32,
-    device: Optional[torch.device] = None,
-    slice_pad: bool = True,
-) -> np.ndarray:
-    qhat_tensor = torch.full((1, *field_shape), float(qhat), dtype=dtype, device=device)
-    inv_qhat = operator.integrate(qhat_tensor, slice_pad=slice_pad)[0]
-    return np.abs(inv_qhat.detach().cpu().numpy())
-
-
-def pointwise_inversion_bounds_nd(pred_field: np.ndarray, inv_width: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    center = np.asarray(pred_field, dtype=float)
-    width = np.asarray(inv_width, dtype=float)
-    return center - width, center + width
-
-
-def _prepare_interval_signal(
-    pred_signal: np.ndarray,
-    kernel: np.ndarray,
-    qhat,
-    slicing: IntervalFFTSlicing,
-) -> tuple[list, np.ndarray]:
-    signal_padded = np.concatenate(([0.0], pred_signal, [0.0]))
-    kernel_pad = np.concatenate((kernel, np.zeros(len(signal_padded) - len(kernel))))
-
-    signal_fft = fft(signal_padded)
-    kernel_fft = fft(kernel_pad)
-    convolved = ifft(signal_fft * kernel_fft)
-
-    center = convolved[slicing.center_start : slicing.center_end]
-    right_edges = convolved[: slicing.n_right_edges]
-    left_edge = convolved[-1]
-
-    # qhat may be scalar or per-point array; pad to match the padded signal length
-    qhat_np = np.asarray(qhat, dtype=float)
-    if qhat_np.ndim == 0:
-        qhat_arr = np.full(len(signal_padded), float(qhat_np))
-    else:
-        # Pad with edge values to match signal_padded length (which has +2 from zero-padding)
-        pad_total = len(signal_padded) - len(qhat_np)
-        pad_left = pad_total // 2
-        pad_right = pad_total - pad_left
-        qhat_arr = np.pad(qhat_np, (pad_left, pad_right), mode='edge')
-    q_center = qhat_arr[slicing.center_start : slicing.center_end]
-    q_right = qhat_arr[: slicing.n_right_edges]
-    q_left = qhat_arr[-1]
-
-    center_set = [interval([x.real - q, x.real + q]) for x, q in zip(center, q_center)]
-    right_set = [interval([x.real - q, x.real + q]) for x, q in zip(right_edges, q_right)]
-    left_set = [interval([left_edge.real - q_left, left_edge.real + q_left])]
-
-    return right_set + center_set + left_set, kernel_fft
-
-
-def intervalfft_inversion_bounds_1d(
-    pred_signal: np.ndarray,
-    kernel: np.ndarray,
-    qhat,
-    output_size: int,
-    *,
-    slicing: IntervalFFTSlicing = IntervalFFTSlicing(),
-    eps: float = 1e-16,
-) -> InversionBounds1D:
-    convolved_set, kernel_fft = _prepare_interval_signal(pred_signal, kernel, qhat, slicing)
-    inverse_kernel = 1.0 / (kernel_fft + eps)
-
-    convolved_set_fft = intervalFFT(convolved_set)
-    convolved_set_fft_kernel = [complex_prod(z, c) for z, c in zip(convolved_set_fft, inverse_kernel)]
-    retrieved_signal = inverse_intervalFFT(convolved_set_fft_kernel)
-    signal_bounds = [Real(z) for z in retrieved_signal]
-
-    bounded = signal_bounds[slicing.output_offset : slicing.output_offset + output_size]
-    lower = np.array([float(x[0].inf) for x in bounded], dtype=float)
-    upper = np.array([float(x[0].sup) for x in bounded], dtype=float)
-    width = upper - lower
-    return InversionBounds1D(lower=lower, upper=upper, width=width)
-
-
-def intervalfft_slice_inversion_bounds_1d(
-    pred_signal: np.ndarray,
-    kernel: np.ndarray,
-    qhat,
-    output_size: Optional[int] = None,
-    *,
-    prepad_repeat: int = 3,
-    postpad_repeat: int = 1,
-    output_offset: int = 3,
-    eps: float = 1e-2,
-) -> InversionBounds1D:
-    if output_size is None:
-        output_size = len(pred_signal)
-
-    signal_padded = np.concatenate(([0.0], pred_signal, [0.0]))
-
-    kernel_pad = np.zeros(len(signal_padded), dtype=float)
-    kernel_pad[: len(kernel)] = kernel
-    kernel_pad = np.roll(kernel_pad, -1)
-
-    conv_signal = ifft(fft(signal_padded) * fft(kernel_pad))
-    qhat_np = np.asarray(qhat, dtype=float)
-    if qhat_np.ndim == 0:
-        qhat_arr = np.full(len(conv_signal), float(qhat_np))
-    else:
-        pad_total = len(conv_signal) - len(qhat_np)
-        pad_left = pad_total // 2
-        pad_right = pad_total - pad_left
-        qhat_arr = np.pad(qhat_np, (pad_left, pad_right), mode='edge')
-    conv_set = [interval([x.real - q, x.real + q]) for x, q in zip(conv_signal, qhat_arr)]
-
-    padded_set = [conv_set[0]] * prepad_repeat + conv_set + [conv_set[-1]] * postpad_repeat
-    inverse_kernel = 1.0 / (fft(np.concatenate((kernel, np.zeros(len(padded_set) - len(kernel))))) + eps)
-
-    conv_set_fft = intervalFFT(padded_set)
-    conv_set_fft_kernel = [complex_prod(z, c) for z, c in zip(conv_set_fft, inverse_kernel)]
-    retrieved_signal = inverse_intervalFFT(conv_set_fft_kernel)
-    bounds = [Real(z) for z in retrieved_signal][output_offset : output_offset + output_size]
-
-    lower = np.array([float(x[0].inf) for x in bounds], dtype=float)
-    upper = np.array([float(x[0].sup) for x in bounds], dtype=float)
-    width = upper - lower
-    return InversionBounds1D(lower=lower, upper=upper, width=width)
-
-
-def invert_residual_bounds_1d(
-    pred_signal: np.ndarray,
-    kernel: np.ndarray,
-    qhat,
-    operator,
-    *,
-    interior_slice: slice = slice(1, -1),
-    intervalfft_slicing: IntervalFFTSlicing = IntervalFFTSlicing(),
-    integrate_slice_pad: bool = False,
-) -> tuple[InversionBounds1D, InversionBounds1D]:
-    point_width = pointwise_inverse_width(
-        operator,
-        n_points=len(pred_signal),
-        qhat=qhat,
-        dtype=torch.float32,
-        device=None,
-        slice_pad=integrate_slice_pad,
-    )
-    point_bounds = pointwise_inversion_bounds_1d(
-        pred_signal=pred_signal,
-        inv_width=point_width,
-        interior_slice=interior_slice,
-    )
-    interval_bounds = intervalfft_inversion_bounds_1d(
-        pred_signal=pred_signal,
-        kernel=kernel,
-        qhat=qhat,
-        output_size=len(point_bounds.lower),
-        slicing=intervalfft_slicing,
-    )
-    return point_bounds, interval_bounds
-
-
-def _trajectory_coverage_1d(truth: np.ndarray, bounds: InversionBounds1D) -> float:
-    in_lower = truth >= bounds.lower[None, :]
-    in_upper = truth <= bounds.upper[None, :]
-    contained = np.logical_and(in_lower, in_upper).all(axis=1)
+def _trajectory_coverage_nd(truth: np.ndarray, bounds: InversionBounds) -> float:
+    in_lower = truth >= bounds.lower[None, ...]
+    in_upper = truth <= bounds.upper[None, ...]
+    axes = tuple(range(1, truth.ndim))
+    contained = np.logical_and(in_lower, in_upper).all(axis=axes)
     return float(contained.mean())
 
 
-def perturbation_bounds_1d(
+def perturbation_bounds_nd(
     pred_signal: np.ndarray,
     residual_operator,
     qhat,
     *,
-    interior_slice: slice = slice(1, -1),
+    interior_slice: Union[slice, tuple[slice, ...]] = (slice(1, -1),),
     config: PerturbationSamplingConfig = PerturbationSamplingConfig(),
     fallback_lower: Optional[np.ndarray] = None,
     fallback_upper: Optional[np.ndarray] = None,
     joint: bool = False,
-) -> InversionBounds1D:
+) -> InversionBounds:
     pred_signal = np.asarray(pred_signal, dtype=np.float32)
-    pred_tensor = torch.tensor(pred_signal, dtype=torch.float32).unsqueeze(0)
-    interior_idx = np.arange(len(pred_signal))[interior_slice]
-    n_interior = len(interior_idx)
+    input_shape = pred_signal.shape
+    n_flat = int(np.prod(input_shape))
+    
+    if isinstance(interior_slice, slice):
+        interior_slice = (interior_slice,)
+    
+    device = next(residual_operator.parameters()).device if hasattr(residual_operator, 'parameters') and any(residual_operator.parameters()) else 'cpu'
+    pred_tensor = torch.tensor(pred_signal, dtype=torch.float32).to(device).unsqueeze(0)
 
-    noise_gen = PDENoiseGenerator1D(device=pred_tensor.device, dtype=pred_tensor.dtype)
+    generator = None
+    if config.use_generator:
+        generator = train_boundary_generator(pred_tensor, residual_operator, qhat, config)
+
+    noise_gen_2d = PDENoiseGenerator(device=pred_tensor.device, dtype=pred_tensor.dtype)
+    noise_gen_1d = PDENoiseGenerator1D(device=pred_tensor.device, dtype=pred_tensor.dtype)
+
+    with torch.no_grad():
+        dummy = torch.zeros((1, *input_shape), device=device)
+        interior_dummy = dummy[(slice(None), *interior_slice)]
+        interior_shape = interior_dummy.shape[1:]
 
     lower = None
     upper = None
     counts = None
-    last_missing = n_interior
+    last_missing = int(np.prod(interior_shape))
 
     for retry_id, std_factor in enumerate(config.std_retry_factors):
         trial_std = float(config.noise_std) * float(std_factor)
-        lower = torch.full((n_interior,), float("inf"), dtype=torch.float32, device=pred_tensor.device)
-        upper = torch.full((n_interior,), float("-inf"), dtype=torch.float32, device=pred_tensor.device)
-        counts = torch.zeros((n_interior,), dtype=torch.long, device=pred_tensor.device)
+        # Reset bounds each retry for standard noise (different scale → different bounds).
+        # For generator: accumulate across retries since each draws fresh random z
+        # and the generator doesn't depend on noise_std.
+        if not config.use_generator or retry_id == 0:
+            lower = torch.full(interior_shape, float("inf"), dtype=torch.float32, device=pred_tensor.device)
+            upper = torch.full(interior_shape, float("-inf"), dtype=torch.float32, device=pred_tensor.device)
+            counts = torch.zeros(interior_shape, dtype=torch.long, device=pred_tensor.device)
 
         remaining = int(config.n_samples)
         round_idx = 0
@@ -311,63 +197,86 @@ def perturbation_bounds_1d(
             draw = min(config.batch_size, remaining)
             seed = None if config.seed is None else int(config.seed + 100 * retry_id + round_idx)
 
-            if config.noise_type == "spatial":
-                noise = noise_gen.spatially_correlated_noise(
-                    draw,
-                    len(pred_signal),
-                    correlation_length=config.correlation_length,
-                    std=trial_std,
-                    seed=seed,
-                )
+            if config.use_generator:
+                # In generator mode, draw generator samples on every retry.
+                # std_retry_factors still gives extra independent attempts,
+                # and bounds/counts are accumulated across retries.
+                with torch.no_grad():
+                    z = torch.randn(draw, n_flat, device=pred_tensor.device)
+                    noise = generator(z)
+            elif len(input_shape) == 1:
+                # 1D signals: use PDENoiseGenerator1D which has proper 1D correlated noise
+                n_points = input_shape[0]
+                if config.noise_type == "spatial":
+                    noise = noise_gen_1d.spatially_correlated_noise(draw, n_points, correlation_length=config.correlation_length, std=trial_std, seed=seed)
+                elif config.noise_type == "white":
+                    noise = noise_gen_1d.white_noise(draw, n_points, std=trial_std, seed=seed)
+                elif config.noise_type == "gp":
+                    noise = noise_gen_1d.gp_noise(draw, n_points, correlation_length=config.correlation_length, std=trial_std, kernel_type=config.gp_kernel, nu=config.gp_nu, seed=seed)
+                elif config.noise_type == "bspline":
+                    noise = noise_gen_1d.bspline_noise(draw, n_points, n_knots=config.bspline_n_knots, std=trial_std, seed=seed)
+                elif config.noise_type == "pre_correlated":
+                    if config.pre_kernel is None:
+                        raise ValueError("pre_kernel must be set in config for noise_type='pre_correlated'")
+                    noise = noise_gen_1d.pre_correlated_noise(draw, n_points, kernel=config.pre_kernel.clone(), std=trial_std, seed=seed)
+                else:
+                    raise ValueError(f"Unknown noise_type: {config.noise_type}")
             elif config.noise_type == "white":
-                noise = noise_gen.white_noise(draw, len(pred_signal), std=trial_std, seed=seed)
-            elif config.noise_type == "gp":
-                noise = noise_gen.gp_noise(
-                    draw,
-                    len(pred_signal),
-                    correlation_length=config.correlation_length,
-                    std=trial_std,
-                    kernel_type=config.gp_kernel,
-                    nu=config.gp_nu,
-                    seed=seed,
-                )
-            elif config.noise_type == "bspline":
-                noise = noise_gen.bspline_noise(
-                    draw,
-                    len(pred_signal),
-                    n_knots=config.bspline_n_knots,
-                    std=trial_std,
-                    seed=seed,
-                )
-            elif config.noise_type == "pre_correlated":
-                if config.pre_kernel is None:
-                    raise ValueError("pre_kernel must be set in config for noise_type='pre_correlated'")
-                noise = noise_gen.pre_correlated_noise(
-                    draw,
-                    len(pred_signal),
-                    kernel=config.pre_kernel.clone(),
-                    std=trial_std,
-                    seed=seed,
-                )
+                noise = noise_gen_2d.white_noise((draw, *input_shape), std=trial_std, seed=seed)
+            elif config.noise_type == "spatial":
+                noises = []
+                for i in range(draw):
+                    noises.append(noise_gen_2d.spatially_correlated_noise(input_shape, correlation_length=config.correlation_length, std=trial_std))
+                noise = torch.stack(noises)
             else:
-                raise ValueError(f"Unknown noise_type: {config.noise_type}")
+                noise = noise_gen_2d.white_noise((draw, *input_shape), std=trial_std, seed=seed)
+
+            # Method 1: MCMC - Langevin
+            if config.use_mcmc and not config.use_generator:
+                noise = noise.clone().detach().requires_grad_(True)
+                qhat_loss = torch.tensor(np.asarray(qhat, dtype=np.float64),
+                                         dtype=torch.float32, device=pred_tensor.device).abs()
+                if qhat_loss.ndim > 0:
+                    qhat_loss = qhat_loss.unsqueeze(0)
+                
+                with torch.enable_grad():
+                    for _ in range(config.mcmc_steps):
+                        if noise.grad is not None:
+                            noise.grad.zero_()
+                        p_mcmc = pred_tensor + noise
+                        r_mcmc = residual_operator(p_mcmc)
+                        diff = torch.abs(r_mcmc) - qhat_loss
+                        l_bound = torch.mean(torch.clamp(diff, min=0)**2)
+                        l_prior = torch.mean(noise**2)
+                        loss = config.lambda_boundary * l_bound + config.lambda_prior * l_prior
+                        loss.backward()
+                        with torch.no_grad():
+                            grad = noise.grad
+                            noise -= (config.mcmc_step_size / 2) * grad
+                            noise += np.sqrt(config.mcmc_step_size) * config.mcmc_noise_scale * torch.randn_like(noise)
+                noise = noise.detach()
 
             perturbed = pred_tensor + noise
             residuals = residual_operator(perturbed)
-            if np.ndim(qhat) == 0:
-                within = torch.abs(residuals) <= abs(float(qhat))
-            else:
-                qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64),
-                                      dtype=torch.float32, device=pred_tensor.device)
-                within = torch.abs(residuals) <= qhat_t.unsqueeze(0)
+            
+            qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64),
+                                  dtype=torch.float32, device=pred_tensor.device).abs()
+            if qhat_t.ndim > 0:
+                qhat_t = qhat_t.unsqueeze(0)
+            
+            within = torch.abs(residuals) <= qhat_t
 
             if joint:
-                # Accept/reject entire trajectories — joint coverage guarantee
-                traj_ok = within.all(dim=1, keepdim=True)   # [B, 1]
+                # Accept/reject entire trajectories
+                traj_ok = within.reshape(draw, -1).all(dim=1)
+                for _ in range(len(input_shape)):
+                    traj_ok = traj_ok.unsqueeze(-1)
                 within = traj_ok.expand_as(within)
 
-            pred_slice = perturbed[:, interior_slice]
-            mask_slice = within[:, interior_slice]
+            # --- Accumulate pre-optimisation bounds ---
+            full_slice = (slice(None), *interior_slice)
+            pred_slice = perturbed[full_slice]
+            mask_slice = within[full_slice]
 
             inf_tensor = torch.full_like(pred_slice, float("inf"))
             ninf_tensor = torch.full_like(pred_slice, float("-inf"))
@@ -378,6 +287,46 @@ def perturbation_bounds_1d(
             upper = torch.maximum(upper, batch_max)
             counts = counts + mask_slice.sum(dim=0)
 
+            # Method 2: Optimisation — rescue rejected samples as additional bounds
+            if config.use_optimisation and not config.use_generator:
+                rejected = ~within.reshape(draw, -1).all(dim=1)
+                if rejected.any():
+                    noise_opt = noise[rejected].clone().detach().requires_grad_(True)
+                    optimizer = optim.Adam([noise_opt], lr=config.opt_lr)
+                    qhat_loss = qhat_t.clone().detach()
+
+                    with torch.enable_grad():
+                        for _ in range(config.opt_steps):
+                            optimizer.zero_grad()
+                            p_opt = pred_tensor + noise_opt
+                            r_opt = residual_operator(p_opt)
+                            diff = torch.abs(r_opt) - qhat_loss
+                            l_bound = torch.mean(torch.clamp(diff, min=0)**2)
+                            l_prior = torch.mean(noise_opt**2)
+                            loss = config.lambda_boundary * l_bound + config.lambda_prior * l_prior
+                            loss.backward()
+                            optimizer.step()
+
+                    with torch.no_grad():
+                        p_final = pred_tensor + noise_opt.detach()
+                        r_final = residual_operator(p_final)
+                        w_final = torch.abs(r_final) <= qhat_t
+                        if joint:
+                            traj_ok_final = w_final.reshape(w_final.shape[0], -1).all(dim=1)
+                            for _ in range(len(input_shape)):
+                                traj_ok_final = traj_ok_final.unsqueeze(-1)
+                            w_final = traj_ok_final.expand_as(w_final)
+
+                        opt_pred = p_final[full_slice]
+                        opt_mask = w_final[full_slice]
+                        opt_min = torch.where(opt_mask, opt_pred,
+                                              torch.full_like(opt_pred, float("inf"))).amin(dim=0)
+                        opt_max = torch.where(opt_mask, opt_pred,
+                                              torch.full_like(opt_pred, float("-inf"))).amax(dim=0)
+                        lower = torch.minimum(lower, opt_min)
+                        upper = torch.maximum(upper, opt_max)
+                        counts = counts + opt_mask.sum(dim=0)
+
             remaining -= draw
             round_idx += 1
 
@@ -387,39 +336,74 @@ def perturbation_bounds_1d(
             break
 
     if last_missing > 0:
-        missing_mask = (counts == 0)
         if fallback_lower is None or fallback_upper is None:
-            raise RuntimeError(
-                f"Perturbation sampling produced no accepted samples at {last_missing} interior points "
-                f"after std retries {config.std_retry_factors}. Increase n_samples/max_rounds."
-            )
-        fallback_lower_t = torch.tensor(fallback_lower, dtype=torch.float32, device=pred_tensor.device)
-        fallback_upper_t = torch.tensor(fallback_upper, dtype=torch.float32, device=pred_tensor.device)
-        lower = torch.where(missing_mask, fallback_lower_t, lower)
-        upper = torch.where(missing_mask, fallback_upper_t, upper)
+            if config.use_generator:
+                # Generator mode can occasionally miss a few points; fill these
+                # conservatively from the valid envelope rather than aborting.
+                valid_mask = ~missing_mask
+                if not valid_mask.any():
+                    raise RuntimeError(
+                        f"Perturbation sampling failed at {last_missing} points. Increase n_samples."
+                    )
+                global_lower = lower[valid_mask].min()
+                global_upper = upper[valid_mask].max()
+                lower = torch.where(missing_mask, global_lower, lower)
+                upper = torch.where(missing_mask, global_upper, upper)
+            else:
+                raise RuntimeError(f"Perturbation sampling failed at {last_missing} points. Increase n_samples.")
+        if fallback_lower is not None and fallback_upper is not None:
+            fallback_lower_t = torch.tensor(fallback_lower, dtype=torch.float32, device=pred_tensor.device)
+            fallback_upper_t = torch.tensor(fallback_upper, dtype=torch.float32, device=pred_tensor.device)
+            lower = torch.where(missing_mask, fallback_lower_t, lower)
+            upper = torch.where(missing_mask, fallback_upper_t, upper)
 
     lower_np = lower.detach().cpu().numpy().astype(float)
     upper_np = upper.detach().cpu().numpy().astype(float)
-    return InversionBounds1D(lower=lower_np, upper=upper_np, width=upper_np - lower_np)
+    return InversionBounds(lower=lower_np, upper=upper_np, width=upper_np - lower_np)
 
 
-def empirical_coverage_curve_1d(
+def perturbation_bounds_1d(
+    pred_signal: np.ndarray,
+    residual_operator,
+    qhat,
+    *,
+    interior_slice: Union[slice, tuple[slice, ...]] = slice(1, -1),
+    config: PerturbationSamplingConfig = PerturbationSamplingConfig(),
+    fallback_lower: Optional[np.ndarray] = None,
+    fallback_upper: Optional[np.ndarray] = None,
+    joint: bool = False,
+) -> InversionBounds:
+    """Wrapper around perturbation_bounds_nd for 1D/2D backward compatibility."""
+    if not isinstance(interior_slice, tuple):
+        if pred_signal.ndim == 2:
+            interior_slice = (slice(None), interior_slice)
+        else:
+            interior_slice = (interior_slice,)
+            
+    return perturbation_bounds_nd(
+        pred_signal=pred_signal,
+        residual_operator=residual_operator,
+        qhat=qhat,
+        interior_slice=interior_slice,
+        config=config,
+        fallback_lower=fallback_lower,
+        fallback_upper=fallback_upper,
+        joint=joint,
+    )
+
+
+def empirical_coverage_curve_nd(
     preds: np.ndarray,
     truths: np.ndarray,
     residual_cal: torch.Tensor,
-    kernel: np.ndarray,
     operator,
     *,
     alphas: Sequence[float],
-    interior_slice: slice = slice(1, -1),
-    intervalfft_slicing: IntervalFFTSlicing = IntervalFFTSlicing(),
-    integrate_slice_pad: bool = False,
+    interior_slice: tuple[slice, ...] = (slice(1, -1),),
     perturbation_config: Optional[PerturbationSamplingConfig] = None,
     cp_mode: str = "marginal",
 ) -> CoverageResult:
     nominal = []
-    cov_point = []
-    cov_interval = []
     cov_perturb = []
 
     preds = np.asarray(preds, dtype=float)
@@ -432,24 +416,11 @@ def empirical_coverage_curve_1d(
             qhat = qhat_scalar * modulation
         else:
             qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
-        point_cover_flags = []
-        interval_cover_flags = []
 
-        for i in tqdm(range(preds.shape[0]), desc=f"  α={float(alpha):.2f} trajectories", leave=False, unit="traj"):
-            point_bounds, interval_bounds = invert_residual_bounds_1d(
-                pred_signal=preds[i],
-                kernel=kernel,
-                qhat=qhat,
-                operator=operator,
-                interior_slice=interior_slice,
-                intervalfft_slicing=intervalfft_slicing,
-                integrate_slice_pad=integrate_slice_pad,
-            )
-            truth_i = truths[i][interior_slice]
-            point_cover_flags.append(_trajectory_coverage_1d(truth_i[None, :], point_bounds))
-            interval_cover_flags.append(_trajectory_coverage_1d(truth_i[None, :], interval_bounds))
-            if perturbation_config is not None:
-                perturb_bounds = perturbation_bounds_1d(
+        if perturbation_config is not None:
+            for i in tqdm(range(preds.shape[0]), desc=f"  α={float(alpha):.2f} trajectories", leave=False, unit="traj"):
+                truth_i = truths[i][interior_slice]
+                perturb_bounds = perturbation_bounds_nd(
                     pred_signal=preds[i],
                     residual_operator=operator,
                     qhat=qhat,
@@ -457,11 +428,9 @@ def empirical_coverage_curve_1d(
                     config=perturbation_config,
                     joint=joint,
                 )
-                cov_perturb.append(_trajectory_coverage_1d(truth_i[None, :], perturb_bounds))
+                cov_perturb.append(_trajectory_coverage_nd(truth_i[None, ...], perturb_bounds))
 
         nominal.append(1.0 - float(alpha))
-        cov_point.append(float(np.mean(point_cover_flags)))
-        cov_interval.append(float(np.mean(interval_cover_flags)))
 
     if perturbation_config is not None:
         n_traj = preds.shape[0]
@@ -472,7 +441,11 @@ def empirical_coverage_curve_1d(
 
     return CoverageResult(
         nominal_coverage=np.asarray(nominal, dtype=float),
-        empirical_coverage_pointwise=np.asarray(cov_point, dtype=float),
-        empirical_coverage_intervalfft=np.asarray(cov_interval, dtype=float),
         empirical_coverage_perturbation=perturb_cov,
     )
+
+# Aliases for backward compatibility and convenience
+perturbation_bounds = perturbation_bounds_1d
+empirical_coverage_curve = empirical_coverage_curve_nd
+empirical_coverage_curve_1d = empirical_coverage_curve_nd
+InversionBounds1D = InversionBounds

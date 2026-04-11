@@ -33,7 +33,6 @@ sys.path.append("..")
 sys.path.append("../..")
 from Utils.PRE.ConvOps_0d import ConvOperator
 
-
 class DuffingOscillator:
     """Numerical Duffing oscillator implementation."""
 
@@ -89,7 +88,6 @@ class DuffingOscillator:
         )
         return solution.t, solution.y.T
 
-
 class DuffingResidualOperator:
     """
     Callable residual operator for the Duffing oscillator:
@@ -133,7 +131,6 @@ class DuffingResidualOperator:
         nonlinear_part = 2 * self.dt**2 * self.beta * x**3
         return linear_part + nonlinear_part
 
-
 # Neural network for the Neural ODE
 class ODEFunc(nn.Module):
     """Neural network representing the ODE function."""
@@ -166,7 +163,6 @@ class ODEFunc(nn.Module):
             torch.Tensor: Predicted derivative
         """
         return self.net(y)
-
 
 def generate_training_data(oscillator, t_span, n_points, n_trajectories,
                            x_range=(-2, 2), v_range=(-2, 2)):
@@ -203,7 +199,6 @@ def generate_training_data(oscillator, t_span, n_points, n_trajectories,
     return (t_eval,
             np.stack(states, axis=0),
             np.stack(derivatives, axis=0))
-
 
 def train_neural_ode(func, train_t, train_states, train_derivs, n_epochs, batch_size):
     """
@@ -250,7 +245,6 @@ def train_neural_ode(func, train_t, train_states, train_derivs, n_epochs, batch_
 
     return losses
 
-
 def evaluate(oscillator, neural_ode, t_span, n_points, x_range, v_range, n_solves):
     """
     Evaluate numerical and neural ODE solutions for multiple initial conditions.
@@ -291,7 +285,6 @@ def evaluate(oscillator, neural_ode, t_span, n_points, x_range, v_range, n_solve
             np.asarray(num_solns),
             np.asarray(neural_solns))
 
-
 def plot_comparison(t, numerical_sol, neural_sol):
     """
     Plot comparison between numerical and neural ODE solutions.
@@ -319,7 +312,6 @@ def plot_comparison(t, numerical_sol, neural_sol):
 
     plt.tight_layout()
     plt.show()
-
 
 # %%
 if __name__ == "__main__":

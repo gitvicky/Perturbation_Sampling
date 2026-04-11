@@ -25,7 +25,6 @@ sys.path.append("..")
 sys.path.append("../..")
 from Utils.PRE.ConvOps_0d import ConvOperator
 
-
 class DampedHarmonicOscillator:
     """Numerical damped harmonic oscillator implementation."""
     
@@ -94,7 +93,6 @@ class DampedHarmonicOscillator:
         )
         return solution.t, solution.y.T
 
-
 #Neural network for the Neural ODE
 class ODEFunc(nn.Module):
     """Neural network representing the ODE function."""
@@ -127,7 +125,6 @@ class ODEFunc(nn.Module):
             torch.Tensor: Predicted derivative
         """
         return self.net(y)
-
 
 def generate_training_data(oscillator, t_span, n_points, n_trajectories):
     """
@@ -164,7 +161,6 @@ def generate_training_data(oscillator, t_span, n_points, n_trajectories):
     return (t_eval, 
             np.stack(states, axis=0),
             np.stack(derivatives, axis=0))
-
 
 def train_neural_ode(func, train_t, train_states, train_derivs, n_epochs, batch_size):
     """
@@ -213,7 +209,6 @@ def train_neural_ode(func, train_t, train_states, train_derivs, n_epochs, batch_
     
     return losses
 
-
 def compare_solutions(oscillator, neural_ode, t_span, initial_state):
     """
     Compare numerical and neural ODE solutions.
@@ -240,7 +235,6 @@ def compare_solutions(oscillator, neural_ode, t_span, initial_state):
     return (t.numpy(), 
             numerical_solution,
             neural_solution.detach().numpy())
-
 
 def evaluate(oscillator, neural_ode, t_span, n_points, x_range, v_range, n_solves):
     """
@@ -284,7 +278,6 @@ def evaluate(oscillator, neural_ode, t_span, n_points, x_range, v_range, n_solve
             np.asarray(num_solns),
             np.asarray(neural_solns))
 
-
 def plot_comparison(t, numerical_sol, neural_sol, damping_type=""):
     """
     Plot comparison between numerical and neural ODE solutions.
@@ -324,7 +317,6 @@ def plot_comparison(t, numerical_sol, neural_sol, damping_type=""):
     plt.tight_layout()
         # plt.show()
 
-
 def plot_phase_space(numerical_sol, neural_sol, damping_type=""):
     """
     Plot phase space comparison between numerical and neural ODE solutions.
@@ -348,7 +340,6 @@ def plot_phase_space(numerical_sol, neural_sol, damping_type=""):
     plt.axhline(y=0, color='k', linestyle='-', alpha=0.3)
     plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
         # plt.show()
-
 
 def analyze_residuals(t, neural_sol, m, c, k):
     """
@@ -388,7 +379,6 @@ def analyze_residuals(t, neural_sol, m, c, k):
     pos_retrieved = D_damped.integrate(pos_res, correlation=True, slice_pad=False)
     
     return residuals, pos_res, pos_retrieved
-
 
 # Main execution
 if __name__ == "__main__":

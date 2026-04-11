@@ -6,15 +6,14 @@ Inverting conformal prediction bounds on the Physics Residual Error (PRE) from r
 
 Given a neural surrogate that approximates solutions to a differential equation, the PRE provides a data-free nonconformity score by evaluating the PDE/ODE residual via finite-difference stencils. Conformal prediction calibrates bounds `[-qhat, +qhat]` on this residual. This project inverts those residual-space bounds back to the physical solution space, answering: *if the residual is bounded, what are the corresponding bounds on the predicted field?*
 
-## Inversion Methods
+## Inversion Methods: Advanced Perturbation Sampling
 
-Three strategies are implemented and compared:
+We implement a suite of Advanced Perturbation Sampling methods to map residual bounds to the physical domain. These methods are model-agnostic and applicable to both linear and nonlinear differential equations.
 
-1. **Point-wise Inversion** — Divides the Fourier transform of the residual bounds by the kernel spectrum: `F^{-1}(F(bounds) / F(kernel))`. Fast, but loses coverage guarantees (~86% at 95% target) because it ignores interval dependencies in the FFT.
-
-2. **Interval FFT (Set Propagation)** — Represents the residual bounds as zonotopes and propagates them through the FFT using interval arithmetic. Preserves all dependencies, achieving guaranteed coverage (100% empirical at 95% target).
-
-3. **Perturbation Sampling** — Samples perturbed predictions, checks whether each perturbation's residual falls within the calibrated bounds, and takes the envelope of accepted samples. Model-agnostic; applicable to nonlinear PDEs.
+1.  **Standard Perturbation Sampling** — Samples correlated noise (Spatial, GP, or B-Spline) and accepts perturbations whose residuals fall within the calibrated conformal bounds.
+2.  **Differentiable Rejection (Optimization)** — For rejected samples, performs inference-time optimization to "push" the perturbation into the valid residual region.
+3.  **Posterior Sampling (Langevin Dynamics)** — Uses MCMC/Langevin steps to refine perturbations, ensuring they satisfy the physics constraints while maintaining diversity.
+4.  **Generative Modeling (Boundary Generator)** — Trains a small generative network to directly produce valid perturbations that lie on the boundary of the physical uncertainty envelope.
 
 ## Experiments
 
@@ -27,41 +26,34 @@ source .venv/bin/activate
 python Expts/experiment_runner.py
 ```
 
-| Experiment | ODE | Description |
+| Experiment | Equation | Description |
 |---|---|---|
-| **SHO** | `m x'' + k x = 0` | Simple Harmonic Oscillator. Neural ODE trained on synthetic trajectories. Composite kernel: `m*D_tt + dt^2*k*I`. |
-| **DHO** | `m x'' + c x' + k x = 0` | Damped Harmonic Oscillator. Adds first-derivative damping term to the SHO kernel: `2m*D_tt + dt*c*D_t + 2*dt^2*k*I`. |
+| **SHO** | `m x'' + k x = 0` | Simple Harmonic Oscillator. Linear test case. |
+| **DHO** | `m x'' + c x' + k x = 0` | Damped Harmonic Oscillator. Linear with damping. |
+| **Pendulum** | `x'' + sin(x) = 0` | Nonlinear Pendulum. Requires nonlinear residual operator. |
+| **Duffing** | `x'' + dx' + ax + bx^3 = 0` | Duffing Oscillator. Nonlinear with cubic term. |
 
 Each experiment:
-1. Trains a Neural ODE on synthetic trajectories (`torchdiffeq`)
-2. Computes residuals via `ConvOperator` (FD stencil convolution)
-3. Calibrates `qhat` using conformal prediction
-4. Inverts bounds using all three methods
-5. Produces bound comparison plots and empirical coverage curves
+1. Trains a Neural ODE on synthetic trajectories.
+2. Computes residuals via `ConvOperator` or nonlinear operator.
+3. Calibrates `qhat` using conformal prediction.
+4. Inverts bounds using Advanced Perturbation Sampling.
+5. Produces bound comparison plots and empirical coverage curves.
 
 Outputs are saved to `Paper/images/`.
-
-### Archived Experiments
-
-Earlier experiments in `earlier/` (not currently run by the experiment runner):
-
-| Experiment | Equation | Notes |
-|---|---|---|
-| **Bessel** | Bessel ODE | Pre-computed `.npy` outputs |
-| **Cauchy-Euler** | Cauchy-Euler ODE | Pre-computed `.npy` outputs |
-| **Advection** | 1D Advection PDE | FNO-based surrogate (`neuraloperator`) |
 
 ## Repository Structure
 
 ```
 Expts/                          # Experiment scripts
-  experiment_runner.py          # Entry point for SHO + DHO
+  experiment_runner.py          # Unified entry point
   SHO/                         # Simple Harmonic Oscillator
   DHO/                         # Damped Harmonic Oscillator
+  Pendulum/                    # Nonlinear Pendulum
+  Duffing/                     # Duffing Oscillator
 
 Inversion_Strategies/           # Core inversion implementations
-  inversion/                   # Point-wise, Interval FFT, Perturbation Sampling
-  intervalFFT/                 # Interval arithmetic FFT + zonotope propagation
+  inversion/                   # Perturbation Sampling (Standard, Opt, Langevin, Gen)
   tests/                       # Tests for inversion methods
 
 Utils/                          # Shared utilities
@@ -70,7 +62,6 @@ Utils/                          # Shared utilities
   noise_gen.py                 # Correlated noise generation
 
 Neural_PDE/                     # Git submodule — neural surrogate framework
-earlier/                        # Archived experiments (Bessel, Cauchy-Euler, Advection)
 Paper/                          # LaTeX report and generated figures
 Notes/                          # Research notes and reference papers
 ```
@@ -83,14 +74,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Requires Python 3.11. Key dependencies: `torch`, `torchdiffeq`, `scipy`, `numpy`, `python-interval`, `matplotlib`.
+Requires Python 3.11. Key dependencies: `torch`, `torchdiffeq`, `scipy`, `numpy`, `matplotlib`.
 
 ## Validation
 
-The primary metric is **empirical coverage**: for a target level `1 - alpha`, what fraction of ground truth trajectories fall within the inverted bounds?
-
-| Method | Coverage at 95% target |
-|---|---|
-| Point-wise | ~86% (undercoverage) |
-| Interval FFT | 100% (guaranteed) |
-| Perturbation Sampling | Depends on sample count and noise config |
+The primary metric is **empirical coverage**: for a target level `1 - alpha`, what fraction of ground truth trajectories fall within the inverted bounds? Advanced Perturbation Sampling typically achieves well-calibrated coverage across both linear and nonlinear cases.
