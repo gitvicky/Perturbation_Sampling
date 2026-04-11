@@ -75,6 +75,26 @@ class CoverageResult:
     empirical_coverage_perturbation: Optional[np.ndarray] = None
 
 
+def _qhat_tensor(qhat, device: torch.device | str) -> torch.Tensor:
+    qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64), dtype=torch.float32, device=device).abs()
+    if qhat_t.ndim > 0:
+        qhat_t = qhat_t.unsqueeze(0)
+    return qhat_t
+
+
+def _boundary_prior_loss(
+    residuals: torch.Tensor,
+    noise: torch.Tensor,
+    qhat_t: torch.Tensor,
+    lambda_boundary: float,
+    lambda_prior: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    diff = torch.abs(residuals) - qhat_t
+    l_bound = torch.mean(torch.clamp(diff, min=0) ** 2)
+    l_prior = torch.mean(noise ** 2)
+    return l_bound, lambda_boundary * l_bound + lambda_prior * l_prior
+
+
 def calibrate_qhat_from_residual(residual_cal: torch.Tensor, alpha: float) -> float:
     scores = np.abs(residual_cal.detach().cpu().numpy().flatten())
     return float(calibrate(scores=scores, n=len(scores), alpha=alpha))
@@ -109,10 +129,7 @@ def train_boundary_generator(
     generator = BoundaryGenerator(input_shape, config.gen_hidden_dim).to(pred_tensor.device)
     optimizer = optim.Adam(generator.parameters(), lr=config.gen_lr)
     
-    qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64), 
-                          dtype=torch.float32, device=pred_tensor.device).abs()
-    if qhat_t.ndim > 0:
-        qhat_t = qhat_t.unsqueeze(0)
+    qhat_t = _qhat_tensor(qhat, pred_tensor.device)
 
     generator.train()
     for _ in range(config.gen_train_steps):
@@ -123,11 +140,13 @@ def train_boundary_generator(
         p_gen = pred_tensor + noise
         r_gen = operator(p_gen)
         
-        diff = torch.abs(r_gen) - qhat_t
-        l_bound = torch.mean(torch.clamp(diff, min=0)**2)
-        l_prior = torch.mean(noise**2)
-        
-        loss = config.lambda_boundary * l_bound + config.lambda_prior * l_prior
+        _, loss = _boundary_prior_loss(
+            r_gen,
+            noise,
+            qhat_t=qhat_t,
+            lambda_boundary=config.lambda_boundary,
+            lambda_prior=config.lambda_prior,
+        )
         loss.backward()
         optimizer.step()
         
@@ -161,7 +180,15 @@ def perturbation_bounds_nd(
     if isinstance(interior_slice, slice):
         interior_slice = (interior_slice,)
     
-    device = next(residual_operator.parameters()).device if hasattr(residual_operator, 'parameters') and any(residual_operator.parameters()) else 'cpu'
+    if isinstance(residual_operator, nn.Module):
+        first_param = next(iter(residual_operator.parameters()), None)
+        if first_param is not None:
+            device = first_param.device
+        else:
+            first_buffer = next(iter(residual_operator.buffers()), None)
+            device = first_buffer.device if first_buffer is not None else "cpu"
+    else:
+        device = "cpu"
     pred_tensor = torch.tensor(pred_signal, dtype=torch.float32).to(device).unsqueeze(0)
 
     generator = None
@@ -234,10 +261,7 @@ def perturbation_bounds_nd(
             # Method 1: MCMC - Langevin
             if config.use_mcmc and not config.use_generator:
                 noise = noise.clone().detach().requires_grad_(True)
-                qhat_loss = torch.tensor(np.asarray(qhat, dtype=np.float64),
-                                         dtype=torch.float32, device=pred_tensor.device).abs()
-                if qhat_loss.ndim > 0:
-                    qhat_loss = qhat_loss.unsqueeze(0)
+                qhat_loss = _qhat_tensor(qhat, pred_tensor.device)
                 
                 with torch.enable_grad():
                     for _ in range(config.mcmc_steps):
@@ -245,10 +269,13 @@ def perturbation_bounds_nd(
                             noise.grad.zero_()
                         p_mcmc = pred_tensor + noise
                         r_mcmc = residual_operator(p_mcmc)
-                        diff = torch.abs(r_mcmc) - qhat_loss
-                        l_bound = torch.mean(torch.clamp(diff, min=0)**2)
-                        l_prior = torch.mean(noise**2)
-                        loss = config.lambda_boundary * l_bound + config.lambda_prior * l_prior
+                        _, loss = _boundary_prior_loss(
+                            r_mcmc,
+                            noise,
+                            qhat_t=qhat_loss,
+                            lambda_boundary=config.lambda_boundary,
+                            lambda_prior=config.lambda_prior,
+                        )
                         loss.backward()
                         with torch.no_grad():
                             grad = noise.grad
@@ -259,10 +286,7 @@ def perturbation_bounds_nd(
             perturbed = pred_tensor + noise
             residuals = residual_operator(perturbed)
             
-            qhat_t = torch.tensor(np.asarray(qhat, dtype=np.float64),
-                                  dtype=torch.float32, device=pred_tensor.device).abs()
-            if qhat_t.ndim > 0:
-                qhat_t = qhat_t.unsqueeze(0)
+            qhat_t = _qhat_tensor(qhat, pred_tensor.device)
             
             within = torch.abs(residuals) <= qhat_t
 
@@ -300,10 +324,15 @@ def perturbation_bounds_nd(
                             optimizer.zero_grad()
                             p_opt = pred_tensor + noise_opt
                             r_opt = residual_operator(p_opt)
-                            diff = torch.abs(r_opt) - qhat_loss
-                            l_bound = torch.mean(torch.clamp(diff, min=0)**2)
-                            l_prior = torch.mean(noise_opt**2)
-                            loss = config.lambda_boundary * l_bound + config.lambda_prior * l_prior
+                            l_bound, loss = _boundary_prior_loss(
+                                r_opt,
+                                noise_opt,
+                                qhat_t=qhat_loss,
+                                lambda_boundary=config.lambda_boundary,
+                                lambda_prior=config.lambda_prior,
+                            )
+                            if l_bound.detach().item() <= 1e-12:
+                                break
                             loss.backward()
                             optimizer.step()
 
