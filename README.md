@@ -30,8 +30,84 @@ python Expts/experiment_runner.py
 |---|---|---|
 | **SHO** | `m x'' + k x = 0` | Simple Harmonic Oscillator. Linear test case. |
 | **DHO** | `m x'' + c x' + k x = 0` | Damped Harmonic Oscillator. Linear with damping. |
-| **Pendulum** | `x'' + sin(x) = 0` | Nonlinear Pendulum. Requires nonlinear residual operator. |
 | **Duffing** | `x'' + dx' + ax + bx^3 = 0` | Duffing Oscillator. Nonlinear with cubic term. |
+
+#### Selecting Experiments
+
+Run a specific experiment by name:
+
+```bash
+python Expts/experiment_runner.py sho        # Simple Harmonic Oscillator only
+python Expts/experiment_runner.py dho        # Damped Harmonic Oscillator only
+python Expts/experiment_runner.py duffing    # Duffing Oscillator only
+python Expts/experiment_runner.py sho dho    # Multiple experiments
+```
+
+#### Sampling Strategies
+
+By default, experiments use **Standard Rejection Sampling** (Monte Carlo with binary accept/reject). Use these flags to switch to an advanced sampling strategy:
+
+| Flag | Method | Description |
+|---|---|---|
+| *(default)* | Standard Rejection (MC) | Monte Carlo sampling with binary accept/reject |
+| `--use-optimisation` | Differentiable Rejection (Optim) | Backpropagates residual violations to rescue rejected samples via gradient descent |
+| `--use-mcmc` | Posterior Sampling (Langevin) | MCMC/Langevin dynamics to walk into the valid physical manifold |
+| `--use-generator` | Generative Modeling (Gen) | Trains a small neural network to directly produce valid perturbations |
+
+```bash
+# Standard rejection sampling (default)
+python Expts/experiment_runner.py sho
+
+# Differentiable rejection (inference-time optimization)
+python Expts/experiment_runner.py sho --use-optimisation
+
+# Posterior sampling (Langevin dynamics)
+python Expts/experiment_runner.py sho --use-mcmc
+
+# Generative modeling (boundary generator)
+python Expts/experiment_runner.py sho --use-generator
+```
+
+#### Noise Types
+
+Control the noise model used for perturbation sampling with `--noise-type`:
+
+| Noise Type | Description |
+|---|---|
+| `spatial` (default) | Spatially correlated noise |
+| `white` | White (uncorrelated) noise |
+| `gp` | Gaussian process noise (RBF kernel) |
+| `bspline` | B-spline basis noise |
+
+```bash
+python Expts/experiment_runner.py sho --noise-type gp
+python Expts/experiment_runner.py duffing --noise-type bspline --use-mcmc
+```
+
+#### Conformal Prediction Mode
+
+Choose between marginal and joint conformal prediction calibration:
+
+```bash
+python Expts/experiment_runner.py sho --cp-mode marginal   # default
+python Expts/experiment_runner.py sho --cp-mode joint
+```
+
+#### Transductive Mode
+
+Use all data for calibration (transductive CP) instead of the default 80/20 split:
+
+```bash
+python Expts/experiment_runner.py sho --transductive
+```
+
+#### Complex PDE Scaling (Advection)
+
+For the 1D Advection PDE experiment, run separately:
+
+```bash
+python Expts/Advection_Perturb.py
+```
 
 Each experiment:
 1. Trains a Neural ODE on synthetic trajectories.

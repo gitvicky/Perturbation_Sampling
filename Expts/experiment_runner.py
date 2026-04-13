@@ -161,6 +161,76 @@ def _save_coverage_plot_nonlinear(case_name, nominal, empirical_perturbation, sa
     fig.savefig(save_path)
     plt.close(fig)
 
+def _compute_alpha_bounds(
+    pred_signal, residual_cal, residual_operator, *,
+    alphas, interior_slice, perturbation_config, cp_mode="marginal",
+):
+    """Compute physical-space bounds for a single trajectory at each alpha level.
+
+    Returns a list of (alpha, InversionBounds) tuples.
+    """
+    joint = cp_mode == "joint"
+    alpha_bounds = []
+    for alpha in tqdm(alphas, desc="Alpha bounds", unit="α"):
+        if joint:
+            qhat_scalar, modulation = calibrate_qhat_joint_from_residual(residual_cal, alpha=float(alpha))
+            qhat = qhat_scalar * modulation
+        else:
+            qhat = calibrate_qhat_from_residual(residual_cal, alpha=float(alpha))
+
+        bounds = perturbation_bounds_1d(
+            pred_signal=pred_signal,
+            residual_operator=residual_operator,
+            qhat=qhat,
+            interior_slice=interior_slice,
+            config=perturbation_config,
+            joint=joint,
+        )
+        alpha_bounds.append((float(alpha), bounds))
+    return alpha_bounds
+
+
+def _save_alpha_bounds_plot(
+    case_name, t_interior, pred_interior, truth_interior,
+    alpha_bounds, save_name,
+):
+    """Plot physical-space bounds at each alpha level as nested shaded bands."""
+    import matplotlib.cm as cm
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    _style_ax(ax)
+
+    # Sort from widest (smallest alpha → highest coverage) to narrowest
+    alpha_bounds_sorted = sorted(alpha_bounds, key=lambda ab: ab[0])
+
+    cmap = plt.get_cmap('magma', len(alpha_bounds_sorted) + 2)
+    for idx, (alpha, bounds) in enumerate(alpha_bounds_sorted):
+        colour = cmap(idx + 1)
+        coverage_pct = f"{100 * (1 - alpha):.0f}"
+        ax.fill_between(
+            t_interior, bounds.lower, bounds.upper,
+            color=colour, alpha=0.30, zorder=1 + idx,
+            label=f'$1-\\alpha = {coverage_pct}\\%$',
+        )
+
+    # Prediction and ground truth on top
+    ax.plot(t_interior, pred_interior, color=PALETTE['prediction'],
+            linewidth=1.8, zorder=len(alpha_bounds_sorted) + 2,
+            label='Neural ODE Prediction')
+    ax.plot(t_interior, truth_interior, color=PALETTE['truth'],
+            linewidth=1.8, marker='.', markersize=3, markevery=5,
+            zorder=len(alpha_bounds_sorted) + 3, label='Ground Truth')
+
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Position')
+    ax.set_title(f'{case_name}: Physical Bounds across $\\alpha$')
+    ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2, fontsize=8)
+
+    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', save_name)
+    fig.savefig(save_path)
+    plt.close(fig)
+
+
 def _perturbation_coverage_curve(
     preds, truths, residual_cal, residual_operator, *,
     alphas, interior_slice, perturbation_config, cp_mode="marginal",
@@ -277,7 +347,7 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
         f"Round-trip failed: max error = {(pos - pos_retrieved[:, 1:-1]).abs().max().item():.2e}"
 
     # --- 5. Plot bounds ---
-    print(f"  [3/4] Saving bounds plot...")
+    print(f"  [3/5] Saving bounds plot...")
     fig, ax = plt.subplots(figsize=(10, 6))
     _style_ax(ax)
     tt = t[1:-1]
@@ -305,8 +375,8 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     plt.close(fig)
 
     # --- 6. Empirical coverage curve across alpha levels ---
-    print(f"  [4/4] Computing empirical coverage curves...")
-    alpha_levels = np.arange(0.10, 0.91, 0.10)
+    print(f"  [4/5] Computing empirical coverage curves...")
+    alpha_levels = np.arange(0.10, 0.91, 0.20)
     sho_coverage = empirical_coverage_curve_1d(
         preds=neural_sol[..., 0],
         truths=numerical_sol[..., 0],
@@ -319,6 +389,25 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     )
     suffix = f"_{'joint' if joint else 'marginal'}_{method}"
     _save_coverage_plot(f"SHO ({cp_mode}, {method})", sho_coverage, f"sho_coverage{suffix}.png")
+
+    # --- 7. Physical-space bounds at each alpha ---
+    print(f"  [5/5] Computing physical bounds across alpha levels...")
+    alpha_bounds = _compute_alpha_bounds(
+        pred_signal=pos[test_idx].numpy(),
+        residual_cal=residual_cal,
+        residual_operator=D_pos,
+        alphas=alpha_levels,
+        interior_slice=slice(1, -1),
+        perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
+    )
+    _save_alpha_bounds_plot(
+        f"SHO ({cp_mode}, {method})", tt,
+        pred_interior=pos[test_idx, 1:-1].numpy(),
+        truth_interior=numerical_sol[test_idx, 1:-1, 0],
+        alpha_bounds=alpha_bounds,
+        save_name=f"sho_alpha_bounds{suffix}.png",
+    )
     print("  SHO experiment complete.\n")
 
 
@@ -395,7 +484,7 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
         f"Round-trip failed: max error = {(pos - pos_retrieved[:, 1:-1]).abs().max().item():.2e}"
 
     # --- 5. Plot bounds ---
-    print(f"  [3/4] Saving bounds plot...")
+    print(f"  [3/5] Saving bounds plot...")
     fig, ax = plt.subplots(figsize=(10, 6))
     _style_ax(ax)
     tt = t[1:-1]
@@ -423,7 +512,7 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     plt.close(fig)
 
     # --- 6. Empirical coverage curve across alpha levels ---
-    print(f"  [4/4] Computing empirical coverage curves...")
+    print(f"  [4/5] Computing empirical coverage curves...")
     alpha_levels = np.arange(0.10, 0.91, 0.10)
     dho_coverage = empirical_coverage_curve_1d(
         preds=neural_sol[..., 0],
@@ -437,6 +526,25 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     )
     suffix = f"_{'joint' if joint else 'marginal'}_{method}"
     _save_coverage_plot(f"DHO ({cp_mode}, {method})", dho_coverage, f"dho_coverage{suffix}.png")
+
+    # --- 7. Physical-space bounds at each alpha ---
+    print(f"  [5/5] Computing physical bounds across alpha levels...")
+    alpha_bounds = _compute_alpha_bounds(
+        pred_signal=pos[test_idx].numpy(),
+        residual_cal=residual_cal,
+        residual_operator=D_damped,
+        alphas=alpha_levels,
+        interior_slice=slice(1, -1),
+        perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
+    )
+    _save_alpha_bounds_plot(
+        f"DHO ({cp_mode}, {method})", tt,
+        pred_interior=pos[test_idx, 1:-1].numpy(),
+        truth_interior=numerical_sol[test_idx, 1:-1, 0],
+        alpha_bounds=alpha_bounds,
+        save_name=f"dho_alpha_bounds{suffix}.png",
+    )
     print("  DHO experiment complete.\n")
 
 
@@ -507,7 +615,7 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})... done")
 
     # --- 5. Plot bounds ---
-    print("  [3/4] Saving bounds plot...")
+    print("  [3/5] Saving bounds plot...")
     fig, ax = plt.subplots(figsize=(10, 6))
     _style_ax(ax)
     tt = t[1:-1]
@@ -538,7 +646,7 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
     plt.close(fig)
 
     # --- 6. Empirical coverage curve across alpha levels ---
-    print("  [4/4] Computing empirical coverage curves (perturbation only)...")
+    print("  [4/5] Computing empirical coverage curves (perturbation only)...")
     alpha_levels = np.arange(0.10, 0.91, 0.10)
     nominal, emp_perturb = _perturbation_coverage_curve(
         preds=neural_sol[..., 0],
@@ -553,6 +661,25 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
     suffix = f"_{'joint' if joint else 'marginal'}_{method}"
     _save_coverage_plot_nonlinear(f"Duffing ({cp_mode}, {method})", nominal, emp_perturb,
                                   f"duffing_coverage{suffix}.png")
+
+    # --- 7. Physical-space bounds at each alpha ---
+    print(f"  [5/5] Computing physical bounds across alpha levels...")
+    alpha_bounds = _compute_alpha_bounds(
+        pred_signal=pos[test_idx].numpy(),
+        residual_cal=residual_cal,
+        residual_operator=residual_op,
+        alphas=alpha_levels,
+        interior_slice=slice(1, -1),
+        perturbation_config=perturb_cfg,
+        cp_mode=cp_mode,
+    )
+    _save_alpha_bounds_plot(
+        f"Duffing ({cp_mode}, {method})", tt,
+        pred_interior=pos[test_idx, 1:-1].numpy(),
+        truth_interior=numerical_sol[test_idx, 1:-1, 0],
+        alpha_bounds=alpha_bounds,
+        save_name=f"duffing_alpha_bounds{suffix}.png",
+    )
     print("  Duffing experiment complete.\n")
 
 EXPERIMENTS = {
