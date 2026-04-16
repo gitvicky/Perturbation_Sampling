@@ -173,7 +173,7 @@ def calibrate_qhat_from_residual(residual_cal: torch.Tensor, alpha: float) -> fl
 
 
 def calibrate_qhat_joint_from_residual(
-    residual_cal: torch.Tensor, alpha: float, eps: float = 1e-16,
+    residual_cal: torch.Tensor, alpha: float, eps: float = 1e-6,
 ) -> tuple[float, np.ndarray]:
     """Joint conformal calibration over residuals.
 

@@ -76,7 +76,7 @@ def _build_perturbation_config(noise_type, seed=123, use_optimisation=False, use
         n_samples=20000,
         batch_size=1000,
         max_rounds=5,
-        noise_std=0.5,
+        noise_std=0.1,
         seed=seed,
         use_optimisation=use_optimisation,
         use_langevin=use_langevin,
@@ -84,7 +84,7 @@ def _build_perturbation_config(noise_type, seed=123, use_optimisation=False, use
         use_vi=use_vi,
         vi_covariance=vi_covariance,
         vi_rank=vi_rank,
-        opt_steps=50,
+        opt_steps=500,
         langevin_steps=20,
     )
     if noise_type == "spatial":
@@ -134,7 +134,7 @@ def _save_coverage_plot(case_name, coverage_result, save_name):
     ax.set_title(f'{case_name}: Empirical Coverage')
     ax.legend(loc='lower right', edgecolor='#DDDDDD')
 
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', save_name)
+    save_path = os.path.join(os.path.dirname(__file__), 'Figures', save_name)
     fig.savefig(save_path)
     plt.close(fig)
 
@@ -164,7 +164,7 @@ def _save_coverage_plot_nonlinear(case_name, nominal, empirical_perturbation, sa
     ax.set_title(f'{case_name}: Empirical Coverage')
     ax.legend(loc='lower right', edgecolor='#DDDDDD')
 
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', save_name)
+    save_path = os.path.join(os.path.dirname(__file__), 'Figures', save_name)
     fig.savefig(save_path)
     plt.close(fig)
 
@@ -233,7 +233,7 @@ def _save_alpha_bounds_plot(
     ax.set_title(f'{case_name}: Physical Bounds across $\\alpha$')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2, fontsize=8)
 
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', save_name)
+    save_path = os.path.join(os.path.dirname(__file__), 'Figures', save_name)
     fig.savefig(save_path)
     plt.close(fig)
 
@@ -377,9 +377,9 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     ax.set_xlabel('Time')
     ax.set_ylabel('Position')
     method = _method_label(use_optimisation, use_langevin, use_generator, use_vi, vi_covariance)
-    ax.set_title(f'SHO: Physical Bounds ({method})')
+    ax.set_title(f'SHO: Physical Bounds ({cp_mode}, {method})')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2)
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', f'sho_bounds_{method}.png')
+    save_path = os.path.join(os.path.dirname(__file__), 'Figures', f'sho_bounds_{"joint" if joint else "marginal"}_{method}.png')
     fig.savefig(save_path)
     plt.close(fig)
 
@@ -516,9 +516,9 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     ax.set_xlabel('Time')
     ax.set_ylabel('Position')
     method = _method_label(use_optimisation, use_langevin, use_generator, use_vi, vi_covariance)
-    ax.set_title(f'DHO: Physical Bounds ({method})')
+    ax.set_title(f'DHO: Physical Bounds ({cp_mode}, {method})')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2)
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', f'dho_bounds_{method}.png')
+    save_path = os.path.join(os.path.dirname(__file__), 'Figures', f'dho_bounds_{"joint" if joint else "marginal"}_{method}.png')
     fig.savefig(save_path)
     plt.close(fig)
 
@@ -652,9 +652,9 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
     ax.set_xlabel('Time')
     ax.set_ylabel('Displacement')
     method = _method_label(use_optimisation, use_langevin, use_generator, use_vi, vi_covariance)
-    ax.set_title(f'Duffing Oscillator: Physical Bounds ({method})')
+    ax.set_title(f'Duffing Oscillator: Physical Bounds ({cp_mode}, {method})')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2)
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', f'duffing_bounds_{method}.png')
+    save_path = os.path.join(os.path.dirname(__file__), 'Figures', f'duffing_bounds_{"joint" if joint else "marginal"}_{method}.png')
     fig.savefig(save_path)
     plt.close(fig)
 
