@@ -44,7 +44,7 @@ def test_standard_sampling(basic_setup):
         noise_type="white",
         noise_std=1.0,  # high noise to ensure rejections without advanced methods
         use_optimisation=False,
-        use_mcmc=False,
+        use_langevin=False,
         use_generator=False,
         max_rounds=1
     )
@@ -64,17 +64,17 @@ def test_standard_sampling(basic_setup):
         pass
 
 
-def test_mcmc_sampling(basic_setup):
+def test_langevin_sampling(basic_setup):
     pred_signal, operator, qhat = basic_setup
     config = PerturbationSamplingConfig(
         n_samples=100,
         batch_size=100,
         noise_type="white",
         noise_std=1.0,
-        use_mcmc=True,
-        mcmc_steps=50,
-        mcmc_step_size=0.01,
-        mcmc_noise_scale=0.0,  # Set to 0 to test pure gradient drift into valid region
+        use_langevin=True,
+        langevin_steps=50,
+        langevin_step_size=0.01,
+        langevin_noise_scale=0.0,  # Set to 0 to test pure gradient drift into valid region
         use_optimisation=False,
         use_generator=False,
         lambda_boundary=10.0,
@@ -104,7 +104,7 @@ def test_optimisation_sampling(basic_setup):
         use_optimisation=True,
         opt_steps=100,
         opt_lr=0.1,
-        use_mcmc=False,
+        use_langevin=False,
         use_generator=False,
         lambda_boundary=1.0,
         lambda_prior=0.0
@@ -133,7 +133,7 @@ def test_generator_sampling(basic_setup):
         lambda_boundary=10.0,
         lambda_prior=0.0,
         use_optimisation=False,
-        use_mcmc=False
+        use_langevin=False
     )
     
     bounds = perturbation_bounds_1d(

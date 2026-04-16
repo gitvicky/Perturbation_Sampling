@@ -8,6 +8,16 @@ from tqdm import tqdm
 
 from Neural_PDE.UQ.inductive_cp import calibrate
 from Utils.noise_gen import PDENoiseGenerator, PDENoiseGenerator1D
+from Utils.latent_priors import (
+    LatentNoisePrior,
+    PriorSpec,
+    build_prior,
+    build_prior_1d,
+)
+from Inversion_Strategies.inversion.vi_inference import (
+    VariationalPosterior,
+    fit_vi_posterior,
+)
 
 @dataclass(frozen=True)
 class InversionBounds:
@@ -17,23 +27,54 @@ class InversionBounds:
 
 
 class BoundaryGenerator(nn.Module):
-    def __init__(self, input_shape: tuple[int, ...], hidden_dim: int = 128):
+    """Maps standard-normal latent ``z`` to a physical perturbation.
+
+    Two modes:
+
+    - ``prior=None`` (grid mode): classic behaviour, net outputs N grid values
+      directly.
+    - ``prior`` given (latent mode): net outputs latent coefficients matching
+      ``prior.latent_shape``, which are then decoded through the fixed prior
+      so the output is guaranteed to live in the prior's function class.
+    """
+
+    def __init__(
+        self,
+        input_shape: tuple[int, ...],
+        hidden_dim: int = 128,
+        prior: Optional[LatentNoisePrior] = None,
+        latent_input_dim: Optional[int] = None,
+    ):
         super().__init__()
         self.input_shape = input_shape
         self.n_flat = int(np.prod(input_shape))
+        self.prior = prior
+
+        if prior is None:
+            out_dim = self.n_flat
+        else:
+            out_dim = int(np.prod(prior.latent_shape))
+        in_dim = latent_input_dim if latent_input_dim is not None else self.n_flat
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+
         self.net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.n_flat, hidden_dim),
+            nn.Linear(in_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, self.n_flat)
+            nn.Linear(hidden_dim, out_dim),
         )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        # z: [batch, n_flat]
         out = self.net(z)
-        return out.view(-1, *self.input_shape)
+        if self.prior is None:
+            return out.view(-1, *self.input_shape)
+        # Latent mode: decode through fixed prior.
+        latent = out.view(-1, *self.prior.latent_shape)
+        eta = self.prior.decode(latent)
+        return eta.view(-1, *self.input_shape)
 
 
 @dataclass(frozen=True)
@@ -53,10 +94,10 @@ class PerturbationSamplingConfig:
 
     # Method 1 & 2: Advanced Sampling
     use_optimisation: bool = False
-    use_mcmc: bool = False
-    mcmc_steps: int = 50
-    mcmc_step_size: float = 1e-3
-    mcmc_noise_scale: float = 1e-4
+    use_langevin: bool = False
+    langevin_steps: int = 50
+    langevin_step_size: float = 1e-3
+    langevin_noise_scale: float = 1e-4
     opt_steps: int = 50
     opt_lr: float = 1e-2
     lambda_prior: float = 1e-3
@@ -67,6 +108,26 @@ class PerturbationSamplingConfig:
     gen_train_steps: int = 500
     gen_lr: float = 1e-3
     gen_hidden_dim: int = 128
+
+    # Method 4: Variational Inference (per-trajectory)
+    use_vi: bool = False
+    vi_steps: int = 500
+    vi_lr: float = 1e-2
+    vi_n_mc: int = 8
+    vi_init_log_sigma: float = -1.0
+    vi_kl_weight: float = 1.0
+    vi_covariance: str = "mean_field"       # "mean_field" | "low_rank" | "full"
+    vi_rank: int = 8                         # only used when covariance="low_rank"
+    vi_full_cov_max_dim: int = 2048          # safety ceiling for "full"
+
+    # --- Latent-space optimisation ---
+    # If True, Langevin/Optimisation run on the *latent* variable of the chosen
+    # noise prior (e.g. B-spline control points, GP whitened coordinates).
+    # If False, they operate on grid-space eta (legacy behaviour).
+    optimise_in_latent: bool = True
+    # Generator output space: "latent" composes the net with a fixed decoder
+    # so output stays in the prior's function class; "grid" matches legacy.
+    generator_space: str = "latent"
 
 
 @dataclass(frozen=True)
@@ -88,10 +149,21 @@ def _boundary_prior_loss(
     qhat_t: torch.Tensor,
     lambda_boundary: float,
     lambda_prior: float,
+    prior: Optional[LatentNoisePrior] = None,
+    latent: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Composite boundary + prior loss.
+
+    If ``prior`` and ``latent`` are provided, the prior term is computed on
+    the latent variable (canonical whitened-space prior), otherwise it falls
+    back to ``mean(noise**2)`` over the grid-space perturbation.
+    """
     diff = torch.abs(residuals) - qhat_t
     l_bound = torch.mean(torch.clamp(diff, min=0) ** 2)
-    l_prior = torch.mean(noise ** 2)
+    if prior is not None and latent is not None:
+        l_prior = prior.log_prior(latent)
+    else:
+        l_prior = torch.mean(noise ** 2)
     return l_bound, lambda_boundary * l_bound + lambda_prior * l_prior
 
 
@@ -122,13 +194,21 @@ def train_boundary_generator(
     pred_tensor: torch.Tensor,
     operator,
     qhat,
-    config: PerturbationSamplingConfig
+    config: PerturbationSamplingConfig,
+    prior: Optional[LatentNoisePrior] = None,
 ) -> nn.Module:
     input_shape = pred_tensor.shape[1:]
     n_flat = int(np.prod(input_shape))
-    generator = BoundaryGenerator(input_shape, config.gen_hidden_dim).to(pred_tensor.device)
+
+    use_latent_gen = (config.generator_space == "latent") and (prior is not None)
+    generator = BoundaryGenerator(
+        input_shape,
+        hidden_dim=config.gen_hidden_dim,
+        prior=prior if use_latent_gen else None,
+        latent_input_dim=n_flat,
+    ).to(pred_tensor.device)
     optimizer = optim.Adam(generator.parameters(), lr=config.gen_lr)
-    
+
     qhat_t = _qhat_tensor(qhat, pred_tensor.device)
 
     generator.train()
@@ -136,10 +216,10 @@ def train_boundary_generator(
         optimizer.zero_grad()
         z = torch.randn(config.batch_size, n_flat, device=pred_tensor.device)
         noise = generator(z)
-        
+
         p_gen = pred_tensor + noise
         r_gen = operator(p_gen)
-        
+
         _, loss = _boundary_prior_loss(
             r_gen,
             noise,
@@ -149,7 +229,7 @@ def train_boundary_generator(
         )
         loss.backward()
         optimizer.step()
-        
+
     generator.eval()
     return generator
 
@@ -176,7 +256,16 @@ def perturbation_bounds_nd(
     pred_signal = np.asarray(pred_signal, dtype=np.float32)
     input_shape = pred_signal.shape
     n_flat = int(np.prod(input_shape))
-    
+
+    # At most one advanced sampler may be active at a time.
+    _flags = [config.use_langevin, config.use_optimisation,
+              config.use_generator, config.use_vi]
+    if sum(bool(f) for f in _flags) > 1:
+        raise ValueError(
+            "Advanced sampling modes are mutually exclusive: at most one of "
+            "{use_langevin, use_optimisation, use_generator, use_vi} may be True."
+        )
+
     if isinstance(interior_slice, slice):
         interior_slice = (interior_slice,)
     
@@ -191,12 +280,51 @@ def perturbation_bounds_nd(
         device = "cpu"
     pred_tensor = torch.tensor(pred_signal, dtype=torch.float32).to(device).unsqueeze(0)
 
+    # Build a latent prior once for 1D or 2D signals.  This is reused across
+    # retries (we rescale the latent, not the prior) so Cholesky factorisations
+    # etc. are computed only once.  Unsupported shapes / noise types fall back
+    # to the legacy grid-space path (prior=None).
+    prior: Optional[LatentNoisePrior] = None
+    if len(input_shape) in (1, 2):
+        prior_spec = PriorSpec(
+            noise_type=config.noise_type,
+            noise_std=config.noise_std,
+            correlation_length=config.correlation_length,
+            gp_kernel=config.gp_kernel,
+            gp_nu=config.gp_nu,
+            bspline_n_knots=config.bspline_n_knots,
+            pre_kernel=config.pre_kernel,
+        )
+        try:
+            prior = build_prior(prior_spec, input_shape, pred_tensor.device,
+                                pred_tensor.dtype)
+        except (ValueError, RuntimeError):
+            prior = None
+
     generator = None
     if config.use_generator:
-        generator = train_boundary_generator(pred_tensor, residual_operator, qhat, config)
+        generator = train_boundary_generator(
+            pred_tensor, residual_operator, qhat, config, prior=prior,
+        )
+
+    q_posterior: Optional[VariationalPosterior] = None
+    if config.use_vi:
+        if prior is None:
+            raise ValueError(
+                "--use-VI requires a latent prior; no 1D/2D prior is available "
+                f"for noise_type={config.noise_type!r} on input_shape={input_shape}."
+            )
+        q_posterior = fit_vi_posterior(
+            pred_tensor, residual_operator, qhat, prior, config, joint=joint,
+        )
 
     noise_gen_2d = PDENoiseGenerator(device=pred_tensor.device, dtype=pred_tensor.dtype)
     noise_gen_1d = PDENoiseGenerator1D(device=pred_tensor.device, dtype=pred_tensor.dtype)
+
+    use_latent = bool(
+        config.optimise_in_latent and prior is not None
+        and not config.use_generator and not config.use_vi
+    )
 
     with torch.no_grad():
         dummy = torch.zeros((1, *input_shape), device=device)
@@ -211,9 +339,9 @@ def perturbation_bounds_nd(
     for retry_id, std_factor in enumerate(config.std_retry_factors):
         trial_std = float(config.noise_std) * float(std_factor)
         # Reset bounds each retry for standard noise (different scale → different bounds).
-        # For generator: accumulate across retries since each draws fresh random z
-        # and the generator doesn't depend on noise_std.
-        if not config.use_generator or retry_id == 0:
+        # For generator/VI: accumulate across retries since each draws fresh random z
+        # and the sampler doesn't depend on noise_std.
+        if not (config.use_generator or config.use_vi) or retry_id == 0:
             lower = torch.full(interior_shape, float("inf"), dtype=torch.float32, device=pred_tensor.device)
             upper = torch.full(interior_shape, float("-inf"), dtype=torch.float32, device=pred_tensor.device)
             counts = torch.zeros(interior_shape, dtype=torch.long, device=pred_tensor.device)
@@ -224,13 +352,28 @@ def perturbation_bounds_nd(
             draw = min(config.batch_size, remaining)
             seed = None if config.seed is None else int(config.seed + 100 * retry_id + round_idx)
 
-            if config.use_generator:
+            # -- Draw initial noise (and latent z if optimising in latent space) --
+            z_latent: Optional[torch.Tensor] = None  # [draw, *latent_shape] when used
+            if config.use_vi:
+                # VI mode: sample from the fitted Gaussian posterior and decode
+                # through the prior.  Bounds/counts accumulate across retries
+                # (each retry just draws more samples from q_phi).
+                with torch.no_grad():
+                    z_shaped = q_posterior.rsample_shaped(draw)
+                    noise = prior.decode(z_shaped)
+            elif config.use_generator:
                 # In generator mode, draw generator samples on every retry.
                 # std_retry_factors still gives extra independent attempts,
                 # and bounds/counts are accumulated across retries.
                 with torch.no_grad():
                     z = torch.randn(draw, n_flat, device=pred_tensor.device)
                     noise = generator(z)
+            elif use_latent:
+                # Latent-space path: sample z from the prior's base distribution,
+                # scale by std_factor (decoders are linear in z), decode.
+                z_latent = prior.sample_latent(draw, seed=seed) * float(std_factor)
+                with torch.no_grad():
+                    noise = prior.decode(z_latent)
             elif len(input_shape) == 1:
                 # 1D signals: use PDENoiseGenerator1D which has proper 1D correlated noise
                 n_points = input_shape[0]
@@ -258,30 +401,61 @@ def perturbation_bounds_nd(
             else:
                 noise = noise_gen_2d.white_noise((draw, *input_shape), std=trial_std, seed=seed)
 
-            # Method 1: MCMC - Langevin
-            if config.use_mcmc and not config.use_generator:
-                noise = noise.clone().detach().requires_grad_(True)
+            # Method 1: Langevin
+            if config.use_langevin and not config.use_generator and not config.use_vi:
                 qhat_loss = _qhat_tensor(qhat, pred_tensor.device)
-                
-                with torch.enable_grad():
-                    for _ in range(config.mcmc_steps):
-                        if noise.grad is not None:
-                            noise.grad.zero_()
-                        p_mcmc = pred_tensor + noise
-                        r_mcmc = residual_operator(p_mcmc)
-                        _, loss = _boundary_prior_loss(
-                            r_mcmc,
-                            noise,
-                            qhat_t=qhat_loss,
-                            lambda_boundary=config.lambda_boundary,
-                            lambda_prior=config.lambda_prior,
-                        )
-                        loss.backward()
-                        with torch.no_grad():
-                            grad = noise.grad
-                            noise -= (config.mcmc_step_size / 2) * grad
-                            noise += np.sqrt(config.mcmc_step_size) * config.mcmc_noise_scale * torch.randn_like(noise)
-                noise = noise.detach()
+
+                if use_latent:
+                    # Langevin on the latent z: eta = prior.decode(z) recomputed
+                    # each step so the perturbation stays on the prior's manifold.
+                    z_var = z_latent.clone().detach().requires_grad_(True)
+                    with torch.enable_grad():
+                        for _ in range(config.langevin_steps):
+                            if z_var.grad is not None:
+                                z_var.grad.zero_()
+                            eta = prior.decode(z_var)
+                            p_lan = pred_tensor + eta
+                            r_lan = residual_operator(p_lan)
+                            _, loss = _boundary_prior_loss(
+                                r_lan,
+                                eta,
+                                qhat_t=qhat_loss,
+                                lambda_boundary=config.lambda_boundary,
+                                lambda_prior=config.lambda_prior,
+                                prior=prior,
+                                latent=z_var,
+                            )
+                            loss.backward()
+                            with torch.no_grad():
+                                grad = z_var.grad
+                                z_var -= (config.langevin_step_size / 2) * grad
+                                z_var += (np.sqrt(config.langevin_step_size) *
+                                          config.langevin_noise_scale *
+                                          torch.randn_like(z_var))
+                    with torch.no_grad():
+                        z_latent = z_var.detach()
+                        noise = prior.decode(z_latent)
+                else:
+                    noise = noise.clone().detach().requires_grad_(True)
+                    with torch.enable_grad():
+                        for _ in range(config.langevin_steps):
+                            if noise.grad is not None:
+                                noise.grad.zero_()
+                            p_lan = pred_tensor + noise
+                            r_lan = residual_operator(p_lan)
+                            _, loss = _boundary_prior_loss(
+                                r_lan,
+                                noise,
+                                qhat_t=qhat_loss,
+                                lambda_boundary=config.lambda_boundary,
+                                lambda_prior=config.lambda_prior,
+                            )
+                            loss.backward()
+                            with torch.no_grad():
+                                grad = noise.grad
+                                noise -= (config.langevin_step_size / 2) * grad
+                                noise += np.sqrt(config.langevin_step_size) * config.langevin_noise_scale * torch.randn_like(noise)
+                    noise = noise.detach()
 
             perturbed = pred_tensor + noise
             residuals = residual_operator(perturbed)
@@ -312,32 +486,60 @@ def perturbation_bounds_nd(
             counts = counts + mask_slice.sum(dim=0)
 
             # Method 2: Optimisation — rescue rejected samples as additional bounds
-            if config.use_optimisation and not config.use_generator:
+            if config.use_optimisation and not config.use_generator and not config.use_vi:
                 rejected = ~within.reshape(draw, -1).all(dim=1)
                 if rejected.any():
-                    noise_opt = noise[rejected].clone().detach().requires_grad_(True)
-                    optimizer = optim.Adam([noise_opt], lr=config.opt_lr)
                     qhat_loss = qhat_t.clone().detach()
 
-                    with torch.enable_grad():
-                        for _ in range(config.opt_steps):
-                            optimizer.zero_grad()
-                            p_opt = pred_tensor + noise_opt
-                            r_opt = residual_operator(p_opt)
-                            l_bound, loss = _boundary_prior_loss(
-                                r_opt,
-                                noise_opt,
-                                qhat_t=qhat_loss,
-                                lambda_boundary=config.lambda_boundary,
-                                lambda_prior=config.lambda_prior,
-                            )
-                            if l_bound.detach().item() <= 1e-12:
-                                break
-                            loss.backward()
-                            optimizer.step()
+                    if use_latent:
+                        # Optimise in latent space: eta = prior.decode(z_opt),
+                        # so every iterate stays on the prior's manifold.
+                        z_opt = z_latent[rejected].clone().detach().requires_grad_(True)
+                        optimizer = optim.Adam([z_opt], lr=config.opt_lr)
+                        with torch.enable_grad():
+                            for _ in range(config.opt_steps):
+                                optimizer.zero_grad()
+                                eta_opt = prior.decode(z_opt)
+                                p_opt = pred_tensor + eta_opt
+                                r_opt = residual_operator(p_opt)
+                                l_bound, loss = _boundary_prior_loss(
+                                    r_opt,
+                                    eta_opt,
+                                    qhat_t=qhat_loss,
+                                    lambda_boundary=config.lambda_boundary,
+                                    lambda_prior=config.lambda_prior,
+                                    prior=prior,
+                                    latent=z_opt,
+                                )
+                                if l_bound.detach().item() <= 1e-12:
+                                    break
+                                loss.backward()
+                                optimizer.step()
+                        with torch.no_grad():
+                            noise_final = prior.decode(z_opt.detach())
+                    else:
+                        noise_opt = noise[rejected].clone().detach().requires_grad_(True)
+                        optimizer = optim.Adam([noise_opt], lr=config.opt_lr)
+                        with torch.enable_grad():
+                            for _ in range(config.opt_steps):
+                                optimizer.zero_grad()
+                                p_opt = pred_tensor + noise_opt
+                                r_opt = residual_operator(p_opt)
+                                l_bound, loss = _boundary_prior_loss(
+                                    r_opt,
+                                    noise_opt,
+                                    qhat_t=qhat_loss,
+                                    lambda_boundary=config.lambda_boundary,
+                                    lambda_prior=config.lambda_prior,
+                                )
+                                if l_bound.detach().item() <= 1e-12:
+                                    break
+                                loss.backward()
+                                optimizer.step()
+                        noise_final = noise_opt.detach()
 
                     with torch.no_grad():
-                        p_final = pred_tensor + noise_opt.detach()
+                        p_final = pred_tensor + noise_final
                         r_final = residual_operator(p_final)
                         w_final = torch.abs(r_final) <= qhat_t
                         if joint:
@@ -366,9 +568,9 @@ def perturbation_bounds_nd(
 
     if last_missing > 0:
         if fallback_lower is None or fallback_upper is None:
-            if config.use_generator:
-                # Generator mode can occasionally miss a few points; fill these
-                # conservatively from the valid envelope rather than aborting.
+            if config.use_generator or config.use_vi:
+                # Generator/VI modes can occasionally miss a few points; fill
+                # these conservatively from the valid envelope rather than aborting.
                 valid_mask = ~missing_mask
                 if not valid_mask.any():
                     raise RuntimeError(

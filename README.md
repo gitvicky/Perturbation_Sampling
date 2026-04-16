@@ -12,8 +12,9 @@ We implement a suite of Advanced Perturbation Sampling methods to map residual b
 
 1.  **Standard Perturbation Sampling** — Samples correlated noise (Spatial, GP, or B-Spline) and accepts perturbations whose residuals fall within the calibrated conformal bounds.
 2.  **Differentiable Rejection (Optimization)** — For rejected samples, performs inference-time optimization to "push" the perturbation into the valid residual region.
-3.  **Posterior Sampling (Langevin Dynamics)** — Uses MCMC/Langevin steps to refine perturbations, ensuring they satisfy the physics constraints while maintaining diversity.
+3.  **Posterior Sampling (Langevin Dynamics)** — Uses Langevin steps to refine perturbations, ensuring they satisfy the physics constraints while maintaining diversity.
 4.  **Generative Modeling (Boundary Generator)** — Trains a small generative network to directly produce valid perturbations that lie on the boundary of the physical uncertainty envelope.
+5.  **Variational Inference (per-trajectory)** — Fits a Gaussian variational posterior `q_φ(z) = N(μ, Σ)` over the latent noise coordinates by maximising an ELBO whose likelihood term is the residual-containment penalty. Supports three covariance parameterisations: mean-field (diagonal), low-rank (`Σ = U Uᵀ + diag(d²)`), and full (dense Cholesky). Works for both 1D signals and 2D spatiotemporal fields.
 
 ## Experiments
 
@@ -51,8 +52,16 @@ By default, experiments use **Standard Rejection Sampling** (Monte Carlo with bi
 |---|---|---|
 | *(default)* | Standard Rejection (MC) | Monte Carlo sampling with binary accept/reject |
 | `--use-optimisation` | Differentiable Rejection (Optim) | Backpropagates residual violations to rescue rejected samples via gradient descent |
-| `--use-mcmc` | Posterior Sampling (Langevin) | MCMC/Langevin dynamics to walk into the valid physical manifold |
+| `--use-langevin` | Posterior Sampling (Langevin) | Langevin dynamics to walk into the valid physical manifold |
 | `--use-generator` | Generative Modeling (Gen) | Trains a small neural network to directly produce valid perturbations |
+| `--use-VI` | Variational Inference (VI) | Fits a per-trajectory Gaussian variational posterior over latent noise coordinates and samples from it at inference |
+
+The advanced-sampling flags are mutually exclusive. For VI, two extra flags pick the covariance parameterisation:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--vi-covariance {mean_field,low_rank,full}` | `mean_field` | Covariance family for `q_φ(z)`. `full` is gated by a latent-dim ceiling (`vi_full_cov_max_dim`, default 2048). |
+| `--vi-rank INT` | `8` | Rank `r` of the low-rank term `U Uᵀ` when `--vi-covariance low_rank`. |
 
 ```bash
 # Standard rejection sampling (default)
@@ -62,10 +71,15 @@ python Expts/experiment_runner.py sho
 python Expts/experiment_runner.py sho --use-optimisation
 
 # Posterior sampling (Langevin dynamics)
-python Expts/experiment_runner.py sho --use-mcmc
+python Expts/experiment_runner.py sho --use-langevin
 
 # Generative modeling (boundary generator)
 python Expts/experiment_runner.py sho --use-generator
+
+# Variational Inference (mean-field / low-rank / full covariance)
+python Expts/experiment_runner.py sho --use-VI
+python Expts/experiment_runner.py sho --use-VI --vi-covariance low_rank --vi-rank 8
+python Expts/experiment_runner.py sho --use-VI --vi-covariance full
 ```
 
 #### Noise Types
@@ -81,7 +95,7 @@ Control the noise model used for perturbation sampling with `--noise-type`:
 
 ```bash
 python Expts/experiment_runner.py sho --noise-type gp
-python Expts/experiment_runner.py duffing --noise-type bspline --use-mcmc
+python Expts/experiment_runner.py duffing --noise-type bspline --use-langevin
 ```
 
 #### Conformal Prediction Mode
@@ -103,11 +117,14 @@ python Expts/experiment_runner.py sho --transductive
 
 #### Complex PDE Scaling (Advection)
 
-For the 1D Advection PDE experiment, run separately:
+For the 1D Advection PDE experiment (2D grid: time × space), run separately:
 
 ```bash
 python Expts/Advection_Perturb.py
+python Expts/Advection_Perturb.py --use-VI --vi-covariance low_rank --vi-rank 8
 ```
+
+The VI path and associated latent noise priors are compatible with 2D spatiotemporal fields via `Spatial2DPrior` (separable Gaussian kernel) and `BSpline2DPrior` (tensor-product cubic B-spline). On 2D grids, `--vi-covariance full` is typically only viable under the B-spline prior because its latent dimension `Kt·Kx` is small; `spatial` 2D priors should use `low_rank`.
 
 Each experiment:
 1. Trains a Neural ODE on synthetic trajectories.
@@ -125,17 +142,19 @@ Expts/                          # Experiment scripts
   experiment_runner.py          # Unified entry point
   SHO/                         # Simple Harmonic Oscillator
   DHO/                         # Damped Harmonic Oscillator
-  Pendulum/                    # Nonlinear Pendulum
   Duffing/                     # Duffing Oscillator
 
 Inversion_Strategies/           # Core inversion implementations
-  inversion/                   # Perturbation Sampling (Standard, Opt, Langevin, Gen)
-  tests/                       # Tests for inversion methods
+  inversion/
+    residual_inversion.py      # Perturbation Sampling (Standard, Opt, Langevin, Gen, VI)
+    vi_inference.py            # Per-trajectory variational posterior (MF / low-rank / full)
+  tests/                       # Tests for inversion methods (incl. SHO_VI, Advection_VI)
 
 Utils/                          # Shared utilities
   PRE/                         # ConvOperator, stencils, boundary conditions
   CP/                          # Conformal prediction calibration
   noise_gen.py                 # Correlated noise generation
+  latent_priors.py             # 1D and 2D latent noise priors (White / Spatial / GP / B-spline)
 
 Neural_PDE/                     # Git submodule — neural surrogate framework
 Paper/                          # LaTeX report and generated figures

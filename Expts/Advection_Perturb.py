@@ -16,18 +16,20 @@ from Inversion_Strategies.inversion.residual_inversion import (
     perturbation_bounds,
 )
 
-def run_advection_experiment(use_optimization=False, use_langevin=False, use_generator=False):
-    print(f"Running Advection Experiment (opt={use_optimization}, langevin={use_langevin}, gen={use_generator})...")
+def run_advection_experiment(use_optimisation=False, use_langevin=False, use_generator=False,
+                              use_vi=False, vi_covariance="low_rank", vi_rank=8):
+    print(f"Running Advection Experiment (opt={use_optimisation}, langevin={use_langevin}, "
+          f"gen={use_generator}, vi={use_vi}({vi_covariance}))...")
     
     # 1. Setup Simulation
-    Nx = 100
-    Nt = 50
+    Nx = 60
+    Nt = 40
     x_min, x_max = 0.0, 2.0
     t_end = 0.5
     v = 1.0
     sim = Advection_1d(Nx, Nt, x_min, x_max, t_end)
     dt, dx = sim.dt, sim.dx
-    
+
     # Generate calibration and test data
     def get_data(n):
         u_sol = []
@@ -40,7 +42,7 @@ def run_advection_experiment(use_optimization=False, use_langevin=False, use_gen
         return torch.tensor(np.array(u_sol), dtype=torch.float32)
 
     print("  Generating data...")
-    u_cal = get_data(20)   # [20, Nt, Nx+3]
+    u_cal = get_data(15)   # [15, Nt, Nx+3]
     u_test = get_data(5)    # [5, Nt, Nx+3]
     
     # 2. Define Residual Operator: u_t + v * u_x = 0
@@ -65,14 +67,23 @@ def run_advection_experiment(use_optimization=False, use_langevin=False, use_gen
     u_pred = u_test[test_idx] + 0.02 * torch.randn_like(u_test[test_idx])
     
     config = PerturbationSamplingConfig(
-        n_samples=500,
-        batch_size=100,
+        n_samples=2000,
+        batch_size=200,
+        max_rounds=3,
+        noise_type="spatial",
         noise_std=0.05,
-        use_optimization=use_optimization,
+        correlation_length=4.0,
+        use_optimisation=use_optimisation,
         use_langevin=use_langevin,
         use_generator=use_generator,
+        use_vi=use_vi,
+        vi_covariance=vi_covariance,
+        vi_rank=vi_rank,
+        vi_steps=300,
         opt_steps=30,
-        gen_train_steps=200
+        langevin_steps=20,
+        gen_train_steps=200,
+        seed=0,
     )
     
     # Advection domain is (Nt, Nx+3). Use interior slice for both.
@@ -119,4 +130,21 @@ def run_advection_experiment(use_optimization=False, use_langevin=False, use_gen
         traceback.print_exc()
 
 if __name__ == "__main__":
-    run_advection_experiment(use_optimization=True)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--use-optimisation', action='store_true')
+    parser.add_argument('--use-langevin', action='store_true')
+    parser.add_argument('--use-generator', action='store_true')
+    parser.add_argument('--use-VI', dest='use_vi', action='store_true')
+    parser.add_argument('--vi-covariance', default='low_rank',
+                        choices=('mean_field', 'low_rank', 'full'))
+    parser.add_argument('--vi-rank', type=int, default=8)
+    args = parser.parse_args()
+    run_advection_experiment(
+        use_optimisation=args.use_optimisation,
+        use_langevin=args.use_langevin,
+        use_generator=args.use_generator,
+        use_vi=args.use_vi,
+        vi_covariance=args.vi_covariance,
+        vi_rank=args.vi_rank,
+    )

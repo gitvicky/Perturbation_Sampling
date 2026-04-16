@@ -16,21 +16,19 @@ This project inverts **Physics Residual Error (PRE) bounds from residual space t
 - **Advanced Sampling Methods**:
   1. **Standard Rejection**: Monte Carlo sampling with binary accept/reject (base method).
   2. **Differentiable Rejection (Optimization)**: Backpropagates residual violations through the physics operator to "rescue" rejected samples via gradient descent.
-  3. **Posterior Sampling (Langevin)**: Uses the gradient of the residual loss to guide a random walk (MCMC) into the valid physical manifold.
+  3. **Posterior Sampling (Langevin)**: Uses the gradient of the residual loss to guide a Langevin random walk into the valid physical manifold.
   4. **Generative Modeling**: Trains a lightweight neural network (MLP/CNN) to map standard Gaussian noise directly onto the valid physical manifold for zero-rejection inference.
 
 ## Repository Structure
 
 ```
 Expts/                              # Experiment suite
-  experiment_runner.py              # Entry point: runs SHO, DHO, Pendulum, Duffing
+  experiment_runner.py              # Entry point: runs SHO, DHO, Duffing
   Advection_Perturb.py              # 1D Advection PDE experiment (Complex PDE Scaling)
   SHO/
     SHO_NODE.py                     # Simple Harmonic Oscillator (Neural ODE)
   DHO/
     DHO_NODE.py                     # Damped Harmonic Oscillator (Neural ODE)
-  Pendulum/
-    Pendulum_NODE.py                # Nonlinear Pendulum
   Duffing/
     Duffing_NODE.py                 # Nonlinear Duffing Oscillator
 
@@ -62,7 +60,7 @@ Neural_PDE/                         # Git submodule — neural surrogate framewo
 # Activate the virtual environment
 source .venv/bin/activate
 
-# Run standard experiments (SHO, DHO, Pendulum, Duffing)
+# Run standard experiments (SHO, DHO, Duffing)
 python Expts/experiment_runner.py
 
 # Test advanced sampling flags:

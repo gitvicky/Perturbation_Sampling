@@ -56,17 +56,21 @@ plt.rcParams.update({
 
 NOISE_TYPES = ("spatial", "white", "gp", "bspline")
 
-def _method_label(use_optimisation, use_mcmc, use_generator):
+def _method_label(use_optimisation, use_langevin, use_generator, use_vi=False, vi_covariance="mean_field"):
     """Return a short label for the sampling method used."""
+    if use_vi:
+        tag = {"mean_field": "MF", "low_rank": "LR", "full": "Full"}.get(vi_covariance, vi_covariance)
+        return f"VI-{tag}"
     if use_generator:
         return "Gen"
-    if use_mcmc:
-        return "MCMC"
+    if use_langevin:
+        return "Langevin"
     if use_optimisation:
         return "Optim"
     return "MC"
 
-def _build_perturbation_config(noise_type, seed=123, use_optimisation=False, use_mcmc=False, use_generator=False):
+def _build_perturbation_config(noise_type, seed=123, use_optimisation=False, use_langevin=False, use_generator=False,
+                                use_vi=False, vi_covariance="mean_field", vi_rank=8):
     """Build a PerturbationSamplingConfig for the given noise type."""
     common = dict(
         n_samples=20000,
@@ -75,10 +79,13 @@ def _build_perturbation_config(noise_type, seed=123, use_optimisation=False, use
         noise_std=0.5,
         seed=seed,
         use_optimisation=use_optimisation,
-        use_mcmc=use_mcmc,
+        use_langevin=use_langevin,
         use_generator=use_generator,
+        use_vi=use_vi,
+        vi_covariance=vi_covariance,
+        vi_rank=vi_rank,
         opt_steps=50,
-        mcmc_steps=20,
+        langevin_steps=20,
     )
     if noise_type == "spatial":
         return PerturbationSamplingConfig(noise_type="spatial", correlation_length=24.0, **common)
@@ -276,10 +283,11 @@ def _perturbation_coverage_curve(
 
     return np.asarray(nominal), np.asarray(cov_perturb)
 
-def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_optimisation=False, use_mcmc=False, use_generator=False):
+def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_optimisation=False, use_langevin=False, use_generator=False,
+            use_vi=False, vi_covariance="mean_field", vi_rank=8):
     """Simple Harmonic Oscillator: m*x'' + k*x = 0"""
     from Expts.SHO.SHO_NODE import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optimisation}, mcmc={use_mcmc}, gen={use_generator})...")
+    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optimisation}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
 
     # --- 1. Train Neural ODE ---
     m, k = 1.0, 1.0
@@ -329,7 +337,8 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     # --- 4. Invert bounds (Perturbation Sampling) ---
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})...")
-    perturb_cfg = _build_perturbation_config(noise_type, seed=123, use_optimisation=use_optimisation, use_mcmc=use_mcmc, use_generator=use_generator)
+    perturb_cfg = _build_perturbation_config(noise_type, seed=123, use_optimisation=use_optimisation, use_langevin=use_langevin, use_generator=use_generator,
+                                             use_vi=use_vi, vi_covariance=vi_covariance, vi_rank=vi_rank)
     perturb_bounds = perturbation_bounds_1d(
         pred_signal=pos[test_idx].numpy(),
         residual_operator=D_pos,
@@ -367,7 +376,7 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     ax.set_xlabel('Time')
     ax.set_ylabel('Position')
-    method = _method_label(use_optimisation, use_mcmc, use_generator)
+    method = _method_label(use_optimisation, use_langevin, use_generator, use_vi, vi_covariance)
     ax.set_title(f'SHO: Physical Bounds ({method})')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2)
     save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', f'sho_bounds_{method}.png')
@@ -411,10 +420,11 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     print("  SHO experiment complete.\n")
 
 
-def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_optimisation=False, use_mcmc=False, use_generator=False):
+def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_optimisation=False, use_langevin=False, use_generator=False,
+            use_vi=False, vi_covariance="mean_field", vi_rank=8):
     """Damped Harmonic Oscillator: m*x'' + c*x' + k*x = 0"""
     from Expts.DHO.DHO_NODE import DampedHarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optimisation}, mcmc={use_mcmc}, gen={use_generator})...")
+    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optimisation}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
 
     # --- 1. Train Neural ODE ---
     m, k, c = 1.0, 1.0, 0.2
@@ -466,7 +476,8 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     # --- 4. Invert bounds (Perturbation Sampling) ---
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})...")
-    perturb_cfg = _build_perturbation_config(noise_type, seed=321, use_optimisation=use_optimisation, use_mcmc=use_mcmc, use_generator=use_generator)
+    perturb_cfg = _build_perturbation_config(noise_type, seed=321, use_optimisation=use_optimisation, use_langevin=use_langevin, use_generator=use_generator,
+                                             use_vi=use_vi, vi_covariance=vi_covariance, vi_rank=vi_rank)
     perturb_bounds = perturbation_bounds_1d(
         pred_signal=pos[test_idx].numpy(),
         residual_operator=D_damped,
@@ -504,7 +515,7 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     ax.set_xlabel('Time')
     ax.set_ylabel('Position')
-    method = _method_label(use_optimisation, use_mcmc, use_generator)
+    method = _method_label(use_optimisation, use_langevin, use_generator, use_vi, vi_covariance)
     ax.set_title(f'DHO: Physical Bounds ({method})')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2)
     save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', f'dho_bounds_{method}.png')
@@ -548,13 +559,14 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     print("  DHO experiment complete.\n")
 
 
-def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", use_optimisation=False, use_mcmc=False, use_generator=False):
+def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", use_optimisation=False, use_langevin=False, use_generator=False,
+            use_vi=False, vi_covariance="mean_field", vi_rank=8):
     """Duffing Oscillator: x'' + delta*x' + alpha*x + beta*x^3 = 0"""
     from Expts.Duffing.Duffing_NODE import (
         DuffingOscillator, DuffingResidualOperator,
         ODEFunc, generate_training_data, train_neural_ode, evaluate,
     )
-    print(f"Running Duffing Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optimisation}, mcmc={use_mcmc}, gen={use_generator})...")
+    print(f"Running Duffing Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optimisation}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
 
     # --- 1. Train Neural ODE ---
     alpha_coeff, beta_coeff, delta_coeff = 1.0, 0.5, 0.2
@@ -603,7 +615,8 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
 
     # --- 4. Invert bounds (perturbation sampling only) ---
     print(f"  [2/4] Perturbation sampling inversion ({noise_type})...")
-    perturb_cfg = _build_perturbation_config(noise_type, seed=789, use_optimisation=use_optimisation, use_mcmc=use_mcmc, use_generator=use_generator)
+    perturb_cfg = _build_perturbation_config(noise_type, seed=789, use_optimisation=use_optimisation, use_langevin=use_langevin, use_generator=use_generator,
+                                             use_vi=use_vi, vi_covariance=vi_covariance, vi_rank=vi_rank)
     perturb_bounds = perturbation_bounds_1d(
         pred_signal=pos[test_idx].numpy(),
         residual_operator=residual_op,
@@ -638,7 +651,7 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
 
     ax.set_xlabel('Time')
     ax.set_ylabel('Displacement')
-    method = _method_label(use_optimisation, use_mcmc, use_generator)
+    method = _method_label(use_optimisation, use_langevin, use_generator, use_vi, vi_covariance)
     ax.set_title(f'Duffing Oscillator: Physical Bounds ({method})')
     ax.legend(loc='best', edgecolor='#DDDDDD', ncol=2)
     save_path = os.path.join(os.path.dirname(__file__), '..', 'Paper', 'images', f'duffing_bounds_{method}.png')
@@ -715,14 +728,31 @@ if __name__ == '__main__':
         help='Use Method 2: Differentiable Rejection (Inference-Time Optimization)',
     )
     parser.add_argument(
-        '--use-mcmc', action='store_true',
+        '--use-langevin', action='store_true',
         help='Use Method 1: Posterior Sampling (Langevin Dynamics)',
     )
     parser.add_argument(
         '--use-generator', action='store_true',
         help='Use Method 3: Generative Modeling (Boundary Generator)',
     )
+    parser.add_argument(
+        '--use-VI', dest='use_vi', action='store_true',
+        help='Use Method 4: Variational Inference (per-trajectory Gaussian posterior)',
+    )
+    parser.add_argument(
+        '--vi-covariance', default='mean_field',
+        choices=('mean_field', 'low_rank', 'full'),
+        help='Variational posterior covariance (default: mean_field)',
+    )
+    parser.add_argument(
+        '--vi-rank', type=int, default=8,
+        help='Rank r for vi-covariance=low_rank (default: 8)',
+    )
     args = parser.parse_args()
+
+    _advanced = [args.use_optimisation, args.use_langevin, args.use_generator, args.use_vi]
+    if sum(bool(f) for f in _advanced) > 1:
+        parser.error("--use-optimisation / --use-langevin / --use-generator / --use-VI are mutually exclusive")
 
     for name in args.experiments:
         EXPERIMENTS[name](
@@ -730,8 +760,11 @@ if __name__ == '__main__':
             noise_type=args.noise_type,
             cp_mode=args.cp_mode,
             use_optimisation=args.use_optimisation,
-            use_mcmc=args.use_mcmc,
-            use_generator=args.use_generator
+            use_langevin=args.use_langevin,
+            use_generator=args.use_generator,
+            use_vi=args.use_vi,
+            vi_covariance=args.vi_covariance,
+            vi_rank=args.vi_rank,
         )
 
 # %%
