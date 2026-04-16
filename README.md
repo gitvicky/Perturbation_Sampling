@@ -51,10 +51,10 @@ By default, experiments use **Standard Rejection Sampling** (Monte Carlo with bi
 | Flag | Method | Description |
 |---|---|---|
 | *(default)* | Standard Rejection (MC) | Monte Carlo sampling with binary accept/reject |
-| `--use-optimisation` | Differentiable Rejection (Optim) | Backpropagates residual violations to rescue rejected samples via gradient descent |
+| `use-optim` | Differentiable Rejection (Optim) | Backpropagates residual violations to rescue rejected samples via gradient descent |
 | `--use-langevin` | Posterior Sampling (Langevin) | Langevin dynamics to walk into the valid physical manifold |
 | `--use-generator` | Generative Modeling (Gen) | Trains a small neural network to directly produce valid perturbations |
-| `--use-VI` | Variational Inference (VI) | Fits a per-trajectory Gaussian variational posterior over latent noise coordinates and samples from it at inference |
+| `--use-vi` | Variational Inference (VI) | Fits a per-trajectory Gaussian variational posterior over latent noise coordinates and samples from it at inference |
 
 The advanced-sampling flags are mutually exclusive. For VI, two extra flags pick the covariance parameterisation:
 
@@ -68,7 +68,7 @@ The advanced-sampling flags are mutually exclusive. For VI, two extra flags pick
 python Expts/experiment_runner.py sho
 
 # Differentiable rejection (inference-time optimization)
-python Expts/experiment_runner.py sho --use-optimisation
+python Expts/experiment_runner.py sho use-optim
 
 # Posterior sampling (Langevin dynamics)
 python Expts/experiment_runner.py sho --use-langevin
@@ -77,9 +77,9 @@ python Expts/experiment_runner.py sho --use-langevin
 python Expts/experiment_runner.py sho --use-generator
 
 # Variational Inference (mean-field / low-rank / full covariance)
-python Expts/experiment_runner.py sho --use-VI
-python Expts/experiment_runner.py sho --use-VI --vi-covariance low_rank --vi-rank 8
-python Expts/experiment_runner.py sho --use-VI --vi-covariance full
+python Expts/experiment_runner.py sho --use-vi
+python Expts/experiment_runner.py sho --use-vi --vi-covariance low_rank --vi-rank 8
+python Expts/experiment_runner.py sho --use-vi --vi-covariance full
 ```
 
 #### Noise Types
@@ -121,7 +121,7 @@ For the 1D Advection PDE experiment (2D grid: time × space), run separately:
 
 ```bash
 python Expts/Advection_Perturb.py
-python Expts/Advection_Perturb.py --use-VI --vi-covariance low_rank --vi-rank 8
+python Expts/Advection_Perturb.py --use-vi --vi-covariance low_rank --vi-rank 8
 ```
 
 The VI path and associated latent noise priors are compatible with 2D spatiotemporal fields via `Spatial2DPrior` (separable Gaussian kernel) and `BSpline2DPrior` (tensor-product cubic B-spline). On 2D grids, `--vi-covariance full` is typically only viable under the B-spline prior because its latent dimension `Kt·Kx` is small; `spatial` 2D priors should use `low_rank`.

@@ -193,3 +193,63 @@ $$\xi^{(k+1)} = \xi^{(k)} - \frac{\epsilon}{2} \nabla_\xi \mathcal{L}(\xi^{(k)})
 Every iterate maintains the Gaussian kernel correlation structure.
 
 **Status:** latent-space optimisation is now implemented and enabled by default (`PerturbationSamplingConfig.optimise_in_latent=True`). The concrete priors live in `Utils/latent_priors.py` (`WhitePrior`, `SpatialPrior`, `GPPrior`, `BSplinePrior`, `PreCorrelatedPrior`, plus 2D variants `Spatial2DPrior` and `BSpline2DPrior`). Langevin (Method 1), Optimisation (Method 2), Generator (Method 3) and VI (Method 4) all act on the latent variable $z$ and decode $\eta = \text{decode}(z)$ every step, so every iterate stays on the prior's function class. The grid-space path is retained for backwards compatibility.
+
+---
+
+## Design Note: What Exactly Is Being Optimised?
+
+A recurring source of confusion is the distinction between the **prior** (which defines the search space) and the **optimised variables** (which move within it). All four advanced methods share the same underlying geometry but differ in what they update.
+
+### The shared setup
+
+A latent prior $p(z) = \mathcal{N}(0, I)$ plus a fixed decoder $G$ (linear map or neural net) induces a noise distribution $\eta = G(z)$ in physical space. The prior's scale — `noise_std`, `correlation_length`, `bspline_n_knots`, etc. — is baked into $G$. The calibrated residual bound $\hat{q}$ defines a **feasible set**
+
+$$\mathcal{F} = \{\eta : |\mathcal{D}(\hat{u} + \eta)| \leq \hat{q}\}.$$
+
+Every method samples from (an approximation of) $\mathcal{F}$; the physical-space bound is the per-index min/max envelope of the accepted samples.
+
+### What each method learns
+
+| Method | Learned variables | Parameter count | Fixed throughout |
+| :--- | :--- | :--- | :--- |
+| **Standard rejection** | — | $0$ | Prior, decoder $G$, $\hat{q}$ |
+| **Langevin / Optim** | Per-sample latent $z_i$ | $B \cdot \dim(z)$ (batch-wide) | Prior scale, decoder $G$, $\hat{q}$ |
+| **VI (mean-field)** | Posterior $(\mu, \sigma^2)$ over $z$ | $2\,\dim(z)$ | Decoder $G$, $\hat{q}$ |
+| **VI (low-rank)** | $(\mu, U, d)$ with $\Sigma = UU^\top + \text{diag}(d^2)$ | $\dim(z)(r + 2)$ | Decoder $G$, $\hat{q}$ |
+| **VI (full)** | $(\mu, L_{\text{chol}})$ | $\dim(z)(\dim(z) + 3)/2$ | Decoder $G$, $\hat{q}$ |
+| **Generator** | Neural net weights $\theta$ for $g_\theta: z \mapsto \eta$ | $\|\theta\|$ (MLP) | Base distribution $\mathcal{N}(0, I)$, $\hat{q}$ |
+
+Crucially, **`noise_std` is never a trainable parameter**. It's a hyperparameter of the prior, set by the user. It controls:
+
+1. The initial search radius $\|\eta_0\|$ before refinement.
+2. The effective scale of gradients on $z$ (since $\eta = G \cdot z$ is linear in the prior scale).
+3. The relative weighting between the boundary loss and the prior penalty.
+
+The `std_retry_factors = (1.0, 0.5, 0.25, ...)` mechanism in `PerturbationSamplingConfig` is a runtime multi-scale sweep — cheap retries at rescaled priors when coverage is incomplete — not a learned scale.
+
+### Three ways to generalise "sample Gaussian, then fit"
+
+The user-facing mental model is: *draw $z \sim \mathcal{N}(0, I)$, then adjust so that $\hat{u} + G(z)$ satisfies $|\mathcal{D}(\cdot)| \leq \hat{q}$.* The question "what if we optimise the Gaussian itself, or the decoder?" maps onto a ladder of variational families of increasing richness:
+
+$$
+\underbrace{q(\eta) = G \cdot \mathcal{N}(0, I)}_{\text{Rejection}}
+\;\to\;
+\underbrace{q(\eta) = G \cdot \delta(z - z_i^*)}_{\text{Langevin / Optim (per-sample)}}
+\;\to\;
+\underbrace{q(\eta) = G \cdot \mathcal{N}(\mu, \Sigma)}_{\text{VI}}
+\;\to\;
+\underbrace{q(\eta) = g_\theta(\mathcal{N}(0, I))}_{\text{Generator}}
+$$
+
+- **Rejection** is the strictest — fixed measure, brute force.
+- **Langevin/Optim** refine each sample independently, giving a non-parametric point cloud concentrated on $\partial \mathcal{F}$. Per-sample expressivity is unlimited but nothing is amortised.
+- **VI** fits a single Gaussian *per trajectory* to cover $\mathcal{F}$; cheap to draw from after fitting but limited by the Gaussian family.
+- **Generator** amortises a *nonlinear* map $z \mapsto \eta$ trained once, mapping the base Gaussian directly onto $\mathcal{F}$. Fastest at inference, most expressive variational family, but requires a training phase and its coverage depends on how well $g_\theta$ learned $\mathcal{F}$.
+
+### Why keep Langevin/Optim when VI and Generator exist?
+
+VI and Generator are **bets on structure**: they assume $\mathcal{F}$ has a shape that can be compactly parameterised (a single Gaussian, or an MLP's image of a Gaussian). When that assumption holds, they are much cheaper than Langevin/Optim.
+
+Langevin/Optim make **no structural assumption**: each sample is projected onto $\partial \mathcal{F}$ independently, so they cope with bent, multi-modal, or otherwise non-Gaussian feasible sets. The hinge loss has a hard zero — if a sample ends up feasible, it is genuinely feasible, not "feasible in expectation under a learned $q$". The cost is $O(\text{steps} \times \text{batch})$ gradient evaluations at inference time.
+
+This is the practical trade-off the benchmark sweep is designed to expose: structural methods (VI, Generator) win on amortisation when their variational family is expressive enough; per-sample methods (Langevin, Optim) win on robustness when the feasible set is geometrically awkward.

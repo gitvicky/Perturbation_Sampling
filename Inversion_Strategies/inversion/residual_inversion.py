@@ -93,7 +93,7 @@ class PerturbationSamplingConfig:
     std_retry_factors: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125, 0.0625)
 
     # Method 1 & 2: Advanced Sampling
-    use_optimisation: bool = False
+    use_optim: bool = False
     use_langevin: bool = False
     langevin_steps: int = 50
     langevin_step_size: float = 1e-3
@@ -258,7 +258,7 @@ def perturbation_bounds_nd(
     n_flat = int(np.prod(input_shape))
 
     # At most one advanced sampler may be active at a time.
-    _flags = [config.use_langevin, config.use_optimisation,
+    _flags = [config.use_langevin, config.use_optim,
               config.use_generator, config.use_vi]
     if sum(bool(f) for f in _flags) > 1:
         raise ValueError(
@@ -311,7 +311,7 @@ def perturbation_bounds_nd(
     if config.use_vi:
         if prior is None:
             raise ValueError(
-                "--use-VI requires a latent prior; no 1D/2D prior is available "
+                "--use-vi requires a latent prior; no 1D/2D prior is available "
                 f"for noise_type={config.noise_type!r} on input_shape={input_shape}."
             )
         q_posterior = fit_vi_posterior(
@@ -486,7 +486,7 @@ def perturbation_bounds_nd(
             counts = counts + mask_slice.sum(dim=0)
 
             # Method 2: Optimisation — rescue rejected samples as additional bounds
-            if config.use_optimisation and not config.use_generator and not config.use_vi:
+            if config.use_optim and not config.use_generator and not config.use_vi:
                 rejected = ~within.reshape(draw, -1).all(dim=1)
                 if rejected.any():
                     qhat_loss = qhat_t.clone().detach()
