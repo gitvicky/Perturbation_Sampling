@@ -1,0 +1,27 @@
+Experiment:
+  task: pde_burgers_1d
+
+Run:
+  name: burgers_toy_unet
+  folder: Expts/Weights
+  seed: 0
+  device: cpu
+
+Model:
+  kind: unet
+  features: 32
+  fno_modes: 16
+  fno_layers: 4
+
+Data:
+  n_train: 200
+  n_eval: 50
+  cache_path: Expts/Burgers/data/Burgers_1d_cached.npz
+  force_regen_data: false
+  normalisation: Min-Max
+
+Opt:
+  epochs: 20
+  batch_size: 64
+  learning_rate: 0.001
+

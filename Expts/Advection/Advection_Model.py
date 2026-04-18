@@ -1,5 +1,5 @@
 """
-Autoregressive 1D U-Net surrogate for the linear advection PDE
+Autoregressive 1D neural surrogates for the linear advection PDE
 
         u_t + v * u_x = 0
 
@@ -7,9 +7,16 @@ Trained to predict u(x, t_{k+1}) given u(x, t_k) and rolled out
 autoregressively to produce full spatiotemporal trajectories of shape
 `(Nt, Nx+3)`, matching the numerical solver's output layout.
 
-Mirrors the role of `SHO_NODE.py` / `DHO_NODE.py` / `Duffing_NODE.py`:
-provides `generate_training_data`, `train_unet`, and `evaluate` so the
-experiment runner can treat this as a drop-in neural surrogate.
+Two architectures are provided with identical `[B, 1, Nx+3] -> [B, 1, Nx+3]`
+interfaces (and both predict a next-step increment via a global residual):
+
+- `UNet1d`: lightweight 2-level U-Net with GELU blocks.
+- `FNO1d`: 4-block 1D Fourier neural operator.
+
+Use `build_model(kind, ...)` to instantiate either. Mirrors the role of
+`SHO_NODE.py` / `DHO_NODE.py` / `Duffing_NODE.py`: provides
+`generate_training_data`, `train_model`, and `evaluate` so the experiment
+runner can treat this as a drop-in neural surrogate.
 """
 
 import numpy as np
@@ -194,9 +201,9 @@ def generate_training_data(sim, n_trajectories, v=1.0, seed=0,
     return inputs, targets, torch.from_numpy(trajs)
 
 
-def train_unet(model, inputs, targets, n_epochs=200, batch_size=64,
-                lr=1e-3, device="cpu", verbose=True):
-    """Train the U-Net on next-step prediction with MSE loss."""
+def train_model(model, inputs, targets, n_epochs=200, batch_size=64,
+                 lr=1e-3, device="cpu", verbose=True):
+    """Train the surrogate on next-step prediction with MSE loss."""
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
@@ -206,7 +213,7 @@ def train_unet(model, inputs, targets, n_epochs=200, batch_size=64,
     inputs = inputs.to(device)
     targets = targets.to(device)
 
-    pbar = tqdm(range(n_epochs), desc="Training U-Net", disable=not verbose)
+    pbar = tqdm(range(n_epochs), desc="Training model", disable=not verbose)
     for _ in pbar:
         perm = torch.randperm(n, device=device)
         total = 0.0

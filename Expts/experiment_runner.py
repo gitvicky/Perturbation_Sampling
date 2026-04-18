@@ -56,6 +56,20 @@ plt.rcParams.update({
 
 NOISE_TYPES = ("spatial", "white", "gp", "bspline")
 
+
+def _prepare_ode_surrogate(func, train_fn, train_args, model_path=None, retrain=False):
+    """Load an existing ODE surrogate or train and optionally persist it."""
+    if model_path and (not retrain) and os.path.exists(model_path):
+        func.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=False))
+        return "loaded"
+    train_fn(*train_args)
+    if model_path:
+        parent = os.path.dirname(model_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        torch.save(func.state_dict(), model_path)
+    return "trained"
+
 def _method_label(use_optim, use_langevin, use_generator, use_vi=False, vi_covariance="mean_field"):
     """Return a short label for the sampling method used."""
     if use_vi:
@@ -283,11 +297,12 @@ def _perturbation_coverage_curve(
 
     return np.asarray(nominal), np.asarray(cov_perturb)
 
-def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_optim=False, use_langevin=False, use_generator=False,
-            use_vi=False, vi_covariance="mean_field", vi_rank=8):
+def run_sho(noise_type="spatial", cp_mode="marginal", use_optim=False, use_langevin=False, use_generator=False,
+            use_vi=False, vi_covariance="mean_field", vi_rank=8, model_path=None, retrain=False,
+            train_epochs=500, n_trajectories=50):
     """Simple Harmonic Oscillator: m*x'' + k*x = 0"""
     from Expts.SHO.SHO_NODE import HarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running SHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optim}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
+    print(f"Running SHO Experiment (transductive, noise={noise_type}, cp={cp_mode}, opt={use_optim}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
 
     # --- 1. Train Neural ODE ---
     m, k = 1.0, 1.0
@@ -295,12 +310,19 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     t_span = (0, 10)
     n_points = 100
-    n_trajectories = 50
     t_train, states, derivs = generate_training_data(
         oscillator, t_span, n_points, n_trajectories)
 
     func = ODEFunc(hidden_dim=64)
-    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    status = _prepare_ode_surrogate(
+        func,
+        train_neural_ode,
+        (func, t_train, states, derivs, train_epochs, 16),
+        model_path=model_path,
+        retrain=retrain,
+    )
+    if model_path:
+        print(f"  [surrogate] {status} model at {model_path}")
 
     t, numerical_sol, neural_sol = evaluate(
         oscillator, func, t_span, n_points, x_range=(-2,2), v_range=(-2,2), n_solves=100)
@@ -318,13 +340,8 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     # --- 3. Compute residuals and calibrate qhat ---
     res = D_pos(pos)
-    if transductive:
-        residual_cal = res           # all data for calibration
-        test_idx = 0                 # predict on first sample
-    else:
-        n_cal = int(0.8 * len(res))
-        residual_cal = res[:n_cal]   # calibration set (80%)
-        test_idx = n_cal             # first held-out sample
+    residual_cal = res
+    test_idx = 0
 
     joint = cp_mode == "joint"
     if joint:
@@ -420,11 +437,12 @@ def run_sho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     print("  SHO experiment complete.\n")
 
 
-def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_optim=False, use_langevin=False, use_generator=False,
-            use_vi=False, vi_covariance="mean_field", vi_rank=8):
+def run_dho(noise_type="spatial", cp_mode="marginal", use_optim=False, use_langevin=False, use_generator=False,
+            use_vi=False, vi_covariance="mean_field", vi_rank=8, model_path=None, retrain=False,
+            train_epochs=500, n_trajectories=50):
     """Damped Harmonic Oscillator: m*x'' + c*x' + k*x = 0"""
     from Expts.DHO.DHO_NODE import DampedHarmonicOscillator, ODEFunc, generate_training_data, train_neural_ode, evaluate
-    print(f"Running DHO Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optim}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
+    print(f"Running DHO Experiment (transductive, noise={noise_type}, cp={cp_mode}, opt={use_optim}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
 
     # --- 1. Train Neural ODE ---
     m, k, c = 1.0, 1.0, 0.2
@@ -432,13 +450,19 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     t_span = (0, 15)
     n_points = 100
-    n_trajectories = 50
-
     t_train, states, derivs = generate_training_data(
         oscillator, t_span, n_points, n_trajectories)
 
     func = ODEFunc(hidden_dim=64)
-    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    status = _prepare_ode_surrogate(
+        func,
+        train_neural_ode,
+        (func, t_train, states, derivs, train_epochs, 16),
+        model_path=model_path,
+        retrain=retrain,
+    )
+    if model_path:
+        print(f"  [surrogate] {status} model at {model_path}")
 
     t, numerical_sol, neural_sol = evaluate(
         oscillator, func, t_span, n_points, x_range=(-2,2), v_range=(-2,2), n_solves=100)
@@ -457,13 +481,8 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
 
     # --- 3. Compute residuals and calibrate qhat ---
     res = D_damped(pos)
-    if transductive:
-        residual_cal = res           # all data for calibration
-        test_idx = 0                 # predict on first sample
-    else:
-        n_cal = int(0.8 * len(res))
-        residual_cal = res[:n_cal]   # calibration set (80%)
-        test_idx = n_cal             # first held-out sample
+    residual_cal = res
+    test_idx = 0
 
     joint = cp_mode == "joint"
     if joint:
@@ -559,14 +578,15 @@ def run_dho(transductive=False, noise_type="spatial", cp_mode="marginal", use_op
     print("  DHO experiment complete.\n")
 
 
-def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", use_optim=False, use_langevin=False, use_generator=False,
-            use_vi=False, vi_covariance="mean_field", vi_rank=8):
+def run_duffing(noise_type="spatial", cp_mode="marginal", use_optim=False, use_langevin=False, use_generator=False,
+            use_vi=False, vi_covariance="mean_field", vi_rank=8, model_path=None, retrain=False,
+            train_epochs=500, n_trajectories=50):
     """Duffing Oscillator: x'' + delta*x' + alpha*x + beta*x^3 = 0"""
     from Expts.Duffing.Duffing_NODE import (
         DuffingOscillator, DuffingResidualOperator,
         ODEFunc, generate_training_data, train_neural_ode, evaluate,
     )
-    print(f"Running Duffing Experiment ({'transductive' if transductive else 'inductive'}, noise={noise_type}, cp={cp_mode}, opt={use_optim}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
+    print(f"Running Duffing Experiment (transductive, noise={noise_type}, cp={cp_mode}, opt={use_optim}, langevin={use_langevin}, gen={use_generator}, vi={use_vi}({vi_covariance}))...")
 
     # --- 1. Train Neural ODE ---
     alpha_coeff, beta_coeff, delta_coeff = 1.0, 0.5, 0.2
@@ -574,13 +594,19 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
 
     t_span = (0, 15)
     n_points = 100
-    n_trajectories = 50
-
     t_train, states, derivs = generate_training_data(
         oscillator, t_span, n_points, n_trajectories)
 
     func = ODEFunc(hidden_dim=64)
-    train_neural_ode(func, t_train, states, derivs, n_epochs=500, batch_size=16)
+    status = _prepare_ode_surrogate(
+        func,
+        train_neural_ode,
+        (func, t_train, states, derivs, train_epochs, 16),
+        model_path=model_path,
+        retrain=retrain,
+    )
+    if model_path:
+        print(f"  [surrogate] {status} model at {model_path}")
 
     t, numerical_sol, neural_sol = evaluate(
         oscillator, func, t_span, n_points,
@@ -596,13 +622,8 @@ def run_duffing(transductive=False, noise_type="spatial", cp_mode="marginal", us
 
     # --- 3. Compute residuals and calibrate qhat ---
     res = residual_op(pos)
-    if transductive:
-        residual_cal = res
-        test_idx = 0
-    else:
-        n_cal = int(0.8 * len(res))
-        residual_cal = res[:n_cal]
-        test_idx = n_cal
+    residual_cal = res
+    test_idx = 0
 
     joint = cp_mode == "joint"
     if joint:
@@ -711,10 +732,6 @@ if __name__ == '__main__':
         help=f'Experiments to run (default: all). Choices: {", ".join(EXPERIMENTS.keys())}',
     )
     parser.add_argument(
-        '--transductive', action='store_true',
-        help='Use all data for calibration (transductive CP) instead of 80/20 split',
-    )
-    parser.add_argument(
         '--noise-type', default='spatial', choices=NOISE_TYPES,
         help=f'Noise model for perturbation sampling (default: spatial). Choices: {", ".join(NOISE_TYPES)}',
     )
@@ -748,6 +765,22 @@ if __name__ == '__main__':
         '--vi-rank', type=int, default=8,
         help='Rank r for vi-covariance=low_rank (default: 8)',
     )
+    parser.add_argument(
+        '--model-path', default=None,
+        help='Optional checkpoint path for ODE surrogate; loads if present unless --retrain.',
+    )
+    parser.add_argument(
+        '--retrain', action='store_true',
+        help='Force retraining and overwrite --model-path.',
+    )
+    parser.add_argument(
+        '--train-epochs', type=int, default=500,
+        help='Epochs used when training ODE surrogate (default: 500).',
+    )
+    parser.add_argument(
+        '--n-trajectories', type=int, default=50,
+        help='Number of ODE trajectories for surrogate training data (default: 50).',
+    )
     args = parser.parse_args()
 
     _advanced = [args.use_optim, args.use_langevin, args.use_generator, args.use_vi]
@@ -756,7 +789,6 @@ if __name__ == '__main__':
 
     for name in args.experiments:
         EXPERIMENTS[name](
-            transductive=args.transductive,
             noise_type=args.noise_type,
             cp_mode=args.cp_mode,
             use_optim=args.use_optim,
@@ -765,6 +797,10 @@ if __name__ == '__main__':
             use_vi=args.use_vi,
             vi_covariance=args.vi_covariance,
             vi_rank=args.vi_rank,
+            model_path=args.model_path,
+            retrain=args.retrain,
+            train_epochs=args.train_epochs,
+            n_trajectories=args.n_trajectories,
         )
 
 # %%

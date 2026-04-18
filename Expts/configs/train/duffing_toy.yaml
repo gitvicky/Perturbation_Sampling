@@ -1,0 +1,29 @@
+Experiment:
+  task: ode_duffing
+
+Run:
+  name: duffing_toy
+  folder: Expts/Weights
+  seed: 0
+
+Physics:
+  alpha: 1.0
+  beta: 0.5
+  delta: 0.2
+  t_span: [0.0, 15.0]
+
+Model:
+  hidden_dim: 64
+
+Data:
+  n_points: 100
+  n_trajectories: 50
+  n_eval_trajectories: 100
+  x_range: [-2.0, 2.0]
+  v_range: [-2.0, 2.0]
+  normalisation: Identity
+
+Opt:
+  epochs: 500
+  batch_size: 16
+

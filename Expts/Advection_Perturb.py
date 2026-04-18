@@ -14,18 +14,19 @@ empirical-coverage curves.
 
 Pipeline
 --------
-1. Train an autoregressive 1D U-Net surrogate (`Expts/Advection/Advection_UNet.py`)
-   on `(u_t, u_{t+1})` pairs drawn from the numerical solver
+1. Train an autoregressive 1D neural surrogate (U-Net or FNO, see
+   `Expts/Advection/Advection_Model.py`) on `(u_t, u_{t+1})` pairs drawn
+   from the numerical solver
    (`Neural_PDE.Numerical_Solvers.Advection.Advection_1d`).
-2. Roll out calibration + test trajectories under the trained U-Net from
-   fresh random Gaussian-pulse initial conditions; keep the numerical
-   solutions as ground truth.
+2. Roll out validation trajectories under the trained surrogate
+   from fresh random Gaussian-pulse initial conditions; keep the
+   numerical solutions as ground truth.
 3. Build the PDE residual operator from central finite-difference stencils
    wrapped as `ConvOperator`s (one temporal, one spatial).
 4. Calibrate `qhat` at target coverage `1 - alpha = 0.9` from residual
-   scores on the U-Net calibration rollouts (marginal or joint CP).
+   scores on all validation rollouts (transductive CP; marginal or joint).
 5. Invert the residual bound `[-qhat, +qhat]` to physical-space bounds on
-   a test trajectory, optionally with gradient-guided variants.
+   a validation trajectory, optionally with gradient-guided variants.
 6. Save bounds + (optional) empirical-coverage curve to `Expts/Figures/`.
 
 Running
@@ -67,6 +68,7 @@ Outputs (in `Expts/Figures/`)
 import os
 import sys
 import argparse
+import yaml
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -83,12 +85,16 @@ from Inversion_Strategies.inversion.residual_inversion import (
     empirical_coverage_curve_nd,
     perturbation_bounds_nd,
 )
-from Expts.Advection.Advection_UNet import (
+from Expts.Advection.Advection_Model import (
     build_model,
     generate_training_data,
-    train_unet,
+    train_model,
     evaluate,
+    rollout,
+    sample_ic_params,
+    solve_parameterised,
 )
+from Neural_PDE.Utils.processing_utils import Normalisation
 
 # -- Shared plot style (matches experiment_runner) -----------------------------
 PALETTE = {
@@ -114,6 +120,42 @@ MODEL_KINDS = ("unet", "fno")
 
 def _default_model_path(kind):
     return os.path.join(MODELS_DIR, f"advection_{kind}.pt")
+
+
+def _load_run_artifacts(run_name, weights_folder):
+    run_dir = os.path.join(weights_folder, run_name)
+    cfg_path = os.path.join(run_dir, "config.yaml")
+    model_path = os.path.join(run_dir, "model.pth")
+    norms_path = os.path.join(run_dir, "norms.npz")
+    if not os.path.exists(cfg_path):
+        raise FileNotFoundError(f"Run config not found: {cfg_path}")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Run checkpoint not found: {model_path}")
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        run_cfg = yaml.safe_load(f)
+    return run_cfg, model_path, norms_path
+
+
+def _evaluate_with_optional_normalizer(sim, model, n_solves, v, seed, device, normalizer=None):
+    """Evaluate trajectories; apply encode/decode when a normalizer is supplied."""
+    rng = np.random.default_rng(seed)
+    num_trajs = []
+    u0_list = []
+    for _ in range(n_solves):
+        xc, width, height = sample_ic_params(rng)
+        traj = solve_parameterised(sim, xc, width, height, v)
+        num_trajs.append(traj)
+        u0_list.append(traj[0])
+    truth = torch.tensor(np.stack(num_trajs, axis=0), dtype=torch.float32)
+    u0 = torch.tensor(np.stack(u0_list, axis=0), dtype=torch.float32)
+
+    if normalizer is None:
+        pred = rollout(model, u0, n_steps=truth.shape[1] - 1, device=device).cpu()
+    else:
+        u0_norm = normalizer.encode(u0.clone())
+        pred_norm = rollout(model, u0_norm, n_steps=truth.shape[1] - 1, device=device).cpu()
+        pred = normalizer.decode(pred_norm.clone())
+    return truth, pred
 
 
 def _style_ax(ax):
@@ -149,8 +191,8 @@ def _build_perturbation_config(noise_type, seed=0, use_optim=False, use_langevin
     defaults (smaller `noise_std`, shorter correlation length).
     """
     common = dict(
-        n_samples=2000,
-        batch_size=200,
+        n_samples=20000,
+        batch_size=2000,
         max_rounds=3,
         noise_std=0.05,
         seed=seed,
@@ -206,14 +248,15 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
                               use_optim=False, use_langevin=False, use_generator=False,
                               use_vi=False, vi_covariance="mean_field", vi_rank=8,
                               plot_coverage=False, n_train=200, n_cal=100, n_test=10,
-                              n_epochs=200, unet_features=32,
+                              n_epochs=200, model_features=32,
                               model_kind="unet", fno_modes=16, fno_layers=4,
-                              model_path=None, retrain=False):
+                              model_path=None, retrain=False,
+                              run_name=None, weights_folder="Expts/Weights"):
     """Run the 1D advection PRE-inversion experiment.
 
-    Generates calibration + test trajectories, calibrates `qhat` on mocked
+    Generates validation trajectories, calibrates `qhat` on mocked
     surrogate residuals, inverts the residual bound to physical-space
-    bounds for a single test trajectory, and (optionally) sweeps alpha to
+    bounds for a single validation trajectory, and (optionally) sweeps alpha to
     produce an empirical-coverage curve.
 
     Parameters
@@ -222,7 +265,7 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
         Perturbation noise model (see `_build_perturbation_config`).
     cp_mode : {"marginal", "joint"}
         Conformal prediction calibration mode. "joint" scales `qhat` by a
-        per-cell modulation learned from the calibration residuals.
+        per-cell modulation learned from validation residuals.
     use_optim, use_langevin, use_generator, use_vi : bool
         Mutually exclusive advanced-sampler flags.
     vi_covariance : {"mean_field", "low_rank", "full"}
@@ -234,11 +277,11 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
         coverage curve in addition to the bounds plot. Note: this is
         considerably more expensive than the single-alpha bounds run.
     n_train, n_cal, n_test : int
-        Number of trajectories used for U-Net training, CP calibration,
-        and held-out testing (respectively).
+        Number of trajectories used for U-Net training and validation.
+        Validation uses `n_cal + n_test` trajectories transductively.
     n_epochs : int
         Number of training epochs for the autoregressive U-Net.
-    unet_features : int
+    model_features : int
         Base channel width for the U-Net encoder / FNO lifted width.
     model_kind : {"unet", "fno"}
         Neural surrogate architecture.
@@ -252,7 +295,31 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
     retrain : bool
         If True, force retraining and overwrite any existing checkpoint.
     """
-    if model_path is None:
+    normalizer = None
+    if run_name is not None:
+        run_cfg, run_model_path, norms_path = _load_run_artifacts(run_name, weights_folder)
+        task = run_cfg.get("Experiment", {}).get("task")
+        if task not in (None, "pde_advection_1d"):
+            raise ValueError(f"Run {run_name} is not an advection task: {task}")
+        model_cfg = run_cfg.get("Model", {})
+        data_cfg = run_cfg.get("Data", {})
+        model_kind = model_cfg.get("kind", model_kind)
+        model_features = int(model_cfg.get("features", model_features))
+        fno_modes = int(model_cfg.get("fno_modes", fno_modes))
+        fno_layers = int(model_cfg.get("fno_layers", fno_layers))
+        model_path = run_model_path
+
+        if os.path.exists(norms_path):
+            norm_name = data_cfg.get("normalisation", "Min-Max")
+            normalizer_ctor = Normalisation(norm_name)
+            # shape only matters for constructor type; parameters are overwritten from artifact
+            dummy = torch.zeros((1, 1, 10), dtype=torch.float32)
+            normalizer = normalizer_ctor(dummy)
+            norms = np.load(norms_path)
+            normalizer.a = torch.tensor(norms["a"])
+            normalizer.b = torch.tensor(norms["b"])
+            print(f"  [run-artifacts] Loaded normalizer ({norm_name}) from {norms_path}")
+    elif model_path is None:
         model_path = _default_model_path(model_kind)
     method = _method_label(use_optim, use_langevin, use_generator, use_vi, vi_covariance)
     print(f"Running Advection Experiment (surrogate={model_kind}, noise={noise_type}, "
@@ -270,7 +337,7 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 2. Train (or load) autoregressive surrogate on (u_t, u_{t+1}) pairs
-    model = build_model(kind=model_kind, features=unet_features,
+    model = build_model(kind=model_kind, features=model_features,
                         modes=fno_modes, n_layers=fno_layers)
     if (not retrain) and os.path.exists(model_path):
         print(f"  [1/5] Loading cached {model_kind.upper()} weights from {model_path}...")
@@ -282,16 +349,21 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
         print(f"  [1/5] Training 1D {model_kind.upper()} surrogate ({reason}; "
               f"{n_train} trajectories, {n_epochs} epochs, device={device})...")
         train_inputs, train_targets, _ = generate_training_data(sim, n_train, v=v, seed=0)
-        train_unet(model, train_inputs, train_targets,
+        train_model(model, train_inputs, train_targets,
                    n_epochs=n_epochs, batch_size=64, lr=1e-3, device=device)
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         torch.save(model.state_dict(), model_path)
         print(f"        Saved {model_kind.upper()} weights to {model_path}")
 
-    # 3. Roll out calibration + test trajectories under the trained U-Net
-    print(f"  [2/5] Generating calibration ({n_cal}) and test ({n_test}) rollouts...")
-    u_cal_truth, u_cal_pred = evaluate(sim, model, n_cal, v=v, seed=1, device=device)
-    u_test_truth, u_test_pred = evaluate(sim, model, n_test, v=v, seed=2, device=device)
+    # 3. Roll out validation trajectories under the trained surrogate
+    n_val = int(n_cal + n_test)
+    print(f"  [2/5] Generating validation rollouts (n={n_val})...")
+    if normalizer is None:
+        u_val_truth, u_val_pred = evaluate(sim, model, n_val, v=v, seed=1, device=device)
+    else:
+        u_val_truth, u_val_pred = _evaluate_with_optional_normalizer(
+            sim, model, n_val, v=v, seed=1, device=device, normalizer=normalizer
+        )
 
     # 4. Define Residual Operator: u_t + v * u_x = 0
     D_t = ConvOperator(domain='t', order=1, scale=1.0/(2*dt))
@@ -301,9 +373,9 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
         """Central-difference residual of `u_t + v*u_x` on a `[BS, Nt, Nx+3]` batch."""
         return D_t(u) + v * D_x(u)
 
-    # 5. Calibrate qhat on U-Net residuals (marginal or joint CP)
-    print(f"  [3/5] Calibrating qhat ({cp_mode}) on U-Net predictions...")
-    res_cal = advection_residual(u_cal_pred)
+    # 5. Calibrate qhat on all validation residuals (transductive CP)
+    print(f"  [3/5] Calibrating qhat ({cp_mode}) on validation predictions...")
+    res_cal = advection_residual(u_val_pred)
 
     joint = cp_mode == "joint"
     if joint:
@@ -317,9 +389,9 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
 
     # 6. Invert bounds using perturbation sampling
     print(f"  [4/5] Perturbation sampling inversion (noise={noise_type}, method={method})...")
-    test_idx = 0
-    u_pred = u_test_pred[test_idx]
-    u_truth = u_test_truth[test_idx]
+    val_idx = 0
+    u_pred = u_val_pred[val_idx]
+    u_truth = u_val_truth[val_idx]
 
     perturb_cfg = _build_perturbation_config(
         noise_type, seed=0,
@@ -379,8 +451,8 @@ def run_advection_experiment(noise_type="spatial", cp_mode="marginal",
         print("  [+] Computing empirical coverage curve...")
         alpha_levels = np.arange(0.10, 0.91, 0.20)
 
-        preds_np = u_test_pred.numpy()
-        truths_np = u_test_truth.numpy()
+        preds_np = u_val_pred.numpy()
+        truths_np = u_val_truth.numpy()
 
         coverage = empirical_coverage_curve_nd(
             preds=preds_np,
@@ -427,12 +499,12 @@ if __name__ == "__main__":
     parser.add_argument('--n-train', type=int, default=200,
                         help='Number of trajectories for U-Net training (default: 200).')
     parser.add_argument('--n-cal', type=int, default=100,
-                        help='Number of CP calibration rollouts (default: 100).')
+                        help='Validation rollouts contributed by former calibration count (default: 100).')
     parser.add_argument('--n-test', type=int, default=10,
-                        help='Number of held-out test rollouts (default: 10).')
+                        help='Validation rollouts contributed by former test count (default: 10).')
     parser.add_argument('--n-epochs', type=int, default=20,
                         help='U-Net training epochs (default: 200).')
-    parser.add_argument('--unet-features', type=int, default=32,
+    parser.add_argument('--model-features', type=int, default=32,
                         help='U-Net base channel width / FNO lifted width (default: 32).')
     parser.add_argument('--model', dest='model_kind', default='unet', choices=MODEL_KINDS,
                         help='Neural surrogate architecture (default: unet).')
@@ -444,6 +516,10 @@ if __name__ == "__main__":
                         help='Surrogate checkpoint path (default: Expts/Advection/models/advection_<kind>.pt).')
     parser.add_argument('--retrain', action='store_true',
                         help='Force retraining and overwrite any cached checkpoint.')
+    parser.add_argument('--run-name', default=None,
+                        help='Load model (+ optional norms/config) from Expts/Weights/<run-name>.')
+    parser.add_argument('--weights-folder', default='Expts/Weights',
+                        help='Root folder for run artifacts (default: Expts/Weights).')
     args = parser.parse_args()
 
     _advanced = [args.use_optim, args.use_langevin, args.use_generator, args.use_vi]
@@ -464,10 +540,12 @@ if __name__ == "__main__":
         n_cal=args.n_cal,
         n_test=args.n_test,
         n_epochs=args.n_epochs,
-        unet_features=args.unet_features,
+        model_features=args.model_features,
         model_kind=args.model_kind,
         fno_modes=args.fno_modes,
         fno_layers=args.fno_layers,
         model_path=args.model_path,
         retrain=args.retrain,
+        run_name=args.run_name,
+        weights_folder=args.weights_folder,
     )

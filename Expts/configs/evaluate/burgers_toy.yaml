@@ -1,0 +1,9 @@
+Experiment:
+  task: pde_burgers_1d
+
+Run:
+  name: burgers_toy_unet
+  folder: Expts/Weights
+  seed: 0
+  device: cpu
+
