@@ -115,6 +115,16 @@ class PushforwardResult:
     upper: np.ndarray            # (T,)  u_pred + qhat * pointwise_std
 
 
+@dataclass
+class FFTPushforwardResult:
+    qhat: float
+    power_R: np.ndarray          # (T//2+1,) residual power spectrum
+    power_E: np.ndarray          # (T//2+1,) error power spectrum (Wiener-pushforward)
+    pointwise_std: np.ndarray    # (T,) — constant under stationarity
+    lower: np.ndarray            # (T,)
+    upper: np.ndarray            # (T,)
+
+
 def mahalanobis_qhat(residual_cal: np.ndarray, sigma_R: np.ndarray,
                      alpha: float, jitter: float = 1e-8) -> float:
     """Split-conformal qhat using Mahalanobis nonconformity scores on residuals."""
@@ -162,6 +172,140 @@ def pushforward_bounds(
         lower=u_pred - halfwidth,
         upper=u_pred + halfwidth,
     )
+
+
+# ---------------------------------------------------------------------------
+# FFT-based pushforward (stationary / translation-invariant operators)
+# ---------------------------------------------------------------------------
+def _pad_interior_to_full(residual_cal: np.ndarray, T: int) -> np.ndarray:
+    """Zero-pad interior residuals (N, T-2k) to full length (N, T).
+
+    Interior residuals come from a stencil of half-width ``k`` applied with
+    ``slice(1, -1)`` style truncation; zero-padding them back to the full
+    grid makes FFT comparisons with the kernel of length ``T`` consistent
+    (Parseval is preserved because appended zeros add no energy).
+    """
+    R = np.asarray(residual_cal, dtype=np.float64)
+    n, m = R.shape
+    if m == T:
+        return R
+    pad = (T - m) // 2
+    out = np.zeros((n, T), dtype=np.float64)
+    out[:, pad:pad + m] = R
+    return out
+
+
+def fft_pushforward_bounds(
+    u_pred: np.ndarray,
+    residual_cal: np.ndarray,
+    kernel: np.ndarray,
+    *,
+    alpha: float,
+    lam: float = 1e-3,
+    eps: float = 1e-12,
+) -> FFTPushforwardResult:
+    """FFT pushforward with L-infinity conformal calibration.
+
+    The operator is diagonal in the Fourier basis, so the Green's function
+    is
+
+        g = IFFT( conj(k_hat) / (|k_hat|^2 + lam * max|k_hat|^2) ).
+
+    With ``C = ||g||_1`` (L1 norm of the Green's function) the circulant
+    identity ``E = g * R`` implies
+
+        ||E||_inf  <=  C * ||R||_inf.
+
+    We therefore calibrate in residual space via the split-conformal
+    quantile of ``s_i = max_t |R_i(t)|`` and report a uniform physical-space
+    band of halfwidth ``C * qhat``.  Coverage:
+
+        P( ||E_test||_inf <= C * qhat ) >= 1 - alpha,
+
+    up to circulant-boundary approximation.  ``lam`` regularises the
+    operator inverse at null-space modes; smaller lam -> tighter bound but
+    also more sensitive to numerical null-space amplification.
+
+    The returned ``power_R``/``power_E`` fields retain the spectra for
+    diagnostic plotting; ``pointwise_std`` stores ``C`` per grid point so
+    the caller's ``qhat * pointwise_std`` convention still yields the
+    correct halfwidth.
+    """
+    u_pred = np.asarray(u_pred, dtype=np.float64)
+    T = u_pred.size
+    kernel = np.asarray(kernel, dtype=np.float64).ravel()
+
+    # Kernel padded to full length (zero-phased).
+    k_full = np.zeros(T, dtype=np.float64)
+    k_full[: kernel.size] = kernel
+    k_hat = np.fft.rfft(k_full, n=T)
+    k_pow = np.abs(k_hat) ** 2
+
+    # Regularised inverse and Green's function.
+    reg = lam * float(k_pow.max()) + eps
+    H = np.conj(k_hat) / (k_pow + reg)
+    g = np.fft.irfft(H, n=T)
+    C = float(np.abs(g).sum())                                  # ||g||_1
+
+    # Residual power spectrum (diagnostic only).
+    R_pad = _pad_interior_to_full(residual_cal, T)
+    R_hat = np.fft.rfft(R_pad, n=T, axis=-1)
+    P_R = np.mean(np.abs(R_hat) ** 2, axis=0)
+    P_E = P_R * (np.abs(H) ** 2)
+
+    # L-infinity conformal score on residuals.
+    scores = np.max(np.abs(R_pad), axis=1)
+    n = scores.size
+    level = min(1.0, np.ceil((n + 1) * (1 - alpha)) / n)
+    qhat = float(np.quantile(scores, level, method="higher"))
+
+    pointwise_std = np.full(T, C, dtype=np.float64)
+    halfwidth = qhat * pointwise_std
+    return FFTPushforwardResult(
+        qhat=qhat,
+        power_R=P_R,
+        power_E=P_E,
+        pointwise_std=pointwise_std,
+        lower=u_pred - halfwidth,
+        upper=u_pred + halfwidth,
+    )
+
+
+def fft_coverage_curve(
+    preds: np.ndarray,
+    truths: np.ndarray,
+    residual_cal: np.ndarray,
+    kernel: np.ndarray,
+    *,
+    alphas: np.ndarray,
+    interior_slice: slice = slice(1, -1),
+    lam: float = 1e-3,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Empirical coverage curve for the FFT pushforward bounds (constant kernel)."""
+    preds = np.asarray(preds, dtype=np.float64)
+    truths = np.asarray(truths, dtype=np.float64)
+
+    nominal = 1.0 - np.asarray(alphas, dtype=np.float64)
+    cov_point = np.zeros_like(nominal)
+    cov_joint = np.zeros_like(nominal)
+
+    for ai, alpha in enumerate(alphas):
+        hits_p = []
+        hits_j = []
+        for i in range(preds.shape[0]):
+            res = fft_pushforward_bounds(
+                preds[i], residual_cal, kernel, alpha=float(alpha), lam=lam,
+            )
+            t_int = truths[i][interior_slice]
+            l_int = res.lower[interior_slice]
+            u_int = res.upper[interior_slice]
+            inside = (t_int >= l_int) & (t_int <= u_int)
+            hits_p.append(float(inside.mean()))
+            hits_j.append(float(inside.all()))
+        cov_point[ai] = float(np.mean(hits_p))
+        cov_joint[ai] = float(np.mean(hits_j))
+
+    return nominal, cov_point, cov_joint
 
 
 # ---------------------------------------------------------------------------
