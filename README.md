@@ -27,6 +27,48 @@ source .venv/bin/activate
 python Expts/experiment_runner.py
 ```
 
+### Config-driven Training / Evaluation (NOs_for_POs-style schema)
+
+For toy Neural ODE and 1D PDE surrogate workflows, use the YAML-driven runners:
+
+```bash
+# Train (creates Expts/Weights/<run_name>/model.pth + norms.npz + config/metrics)
+python Expts/train.py --config Expts/configs/train/sho_toy.yaml
+python Expts/train.py --config Expts/configs/train/dho_toy.yaml
+python Expts/train.py --config Expts/configs/train/duffing_toy.yaml
+python Expts/train.py --config Expts/configs/train/advection_toy.yaml
+python Expts/train.py --config Expts/configs/train/burgers_toy.yaml
+
+# Evaluate existing trained run
+python Expts/evaluate.py --config Expts/configs/evaluate/sho_toy.yaml
+python Expts/evaluate.py --config Expts/configs/evaluate/advection_toy.yaml
+python Expts/evaluate.py --config Expts/configs/evaluate/burgers_toy.yaml
+```
+
+This schema keeps training/evaluation artifact handling aligned with NOs_for_POs:
+normalisation is persisted in `norms.npz` and reused during evaluation.
+
+Run artifact layout:
+
+```text
+Expts/Weights/<run_name>/
+  model.pth
+  norms.npz
+  config.yaml
+  train_metrics.yaml
+  eval_metrics.yaml
+```
+
+Existing inversion entrypoints can now consume these artifacts:
+
+```bash
+# ODE inversion using an existing checkpoint
+python Expts/experiment_runner.py sho --model-path Expts/Weights/sho_toy/model.pth
+
+# Advection inversion using full run artifacts (config/model/norms)
+python Expts/Advection_Perturb.py --run-name advection_toy_unet --weights-folder Expts/Weights
+```
+
 | Experiment | Equation | Description |
 |---|---|---|
 | **SHO** | `m x'' + k x = 0` | Simple Harmonic Oscillator. Linear test case. |
@@ -51,7 +93,7 @@ By default, experiments use **Standard Rejection Sampling** (Monte Carlo with bi
 | Flag | Method | Description |
 |---|---|---|
 | *(default)* | Standard Rejection (MC) | Monte Carlo sampling with binary accept/reject |
-| `use-optim` | Differentiable Rejection (Optim) | Backpropagates residual violations to rescue rejected samples via gradient descent |
+| `--use-optim` | Differentiable Rejection (Optim) | Backpropagates residual violations to rescue rejected samples via gradient descent |
 | `--use-langevin` | Posterior Sampling (Langevin) | Langevin dynamics to walk into the valid physical manifold |
 | `--use-generator` | Generative Modeling (Gen) | Trains a small neural network to directly produce valid perturbations |
 | `--use-vi` | Variational Inference (VI) | Fits a per-trajectory Gaussian variational posterior over latent noise coordinates and samples from it at inference |
@@ -68,7 +110,7 @@ The advanced-sampling flags are mutually exclusive. For VI, two extra flags pick
 python Expts/experiment_runner.py sho
 
 # Differentiable rejection (inference-time optimization)
-python Expts/experiment_runner.py sho use-optim
+python Expts/experiment_runner.py sho --use-optim
 
 # Posterior sampling (Langevin dynamics)
 python Expts/experiment_runner.py sho --use-langevin
@@ -80,6 +122,16 @@ python Expts/experiment_runner.py sho --use-generator
 python Expts/experiment_runner.py sho --use-vi
 python Expts/experiment_runner.py sho --use-vi --vi-covariance low_rank --vi-rank 8
 python Expts/experiment_runner.py sho --use-vi --vi-covariance full
+```
+
+#### ODE Surrogate Loading / Retraining
+
+`experiment_runner.py` now supports reusing an existing ODE checkpoint:
+
+```bash
+python Expts/experiment_runner.py sho --model-path Expts/Weights/sho_toy/model.pth
+python Expts/experiment_runner.py sho --model-path Expts/Weights/sho_toy/model.pth --retrain
+python Expts/experiment_runner.py sho --train-epochs 200 --n-trajectories 30
 ```
 
 #### Noise Types
@@ -107,13 +159,10 @@ python Expts/experiment_runner.py sho --cp-mode marginal   # default
 python Expts/experiment_runner.py sho --cp-mode joint
 ```
 
-#### Transductive Mode
+#### Transductive Calibration
 
-Use all data for calibration (transductive CP) instead of the default 80/20 split:
-
-```bash
-python Expts/experiment_runner.py sho --transductive
-```
+`experiment_runner.py` now uses transductive CP by default (all available
+residuals are used to calibrate `qhat`).
 
 #### Complex PDE Scaling (Advection)
 
@@ -122,9 +171,25 @@ For the 1D Advection PDE experiment (2D grid: time × space), run separately:
 ```bash
 python Expts/Advection_Perturb.py
 python Expts/Advection_Perturb.py --use-vi --vi-covariance low_rank --vi-rank 8
+python Expts/Advection_Perturb.py --run-name advection_toy_unet --weights-folder Expts/Weights
 ```
 
 The VI path and associated latent noise priors are compatible with 2D spatiotemporal fields via `Spatial2DPrior` (separable Gaussian kernel) and `BSpline2DPrior` (tensor-product cubic B-spline). On 2D grids, `--vi-covariance full` is typically only viable under the B-spline prior because its latent dimension `Kt·Kx` is small; `spatial` 2D priors should use `low_rank`.
+
+#### Complex PDE Scaling (Burgers)
+
+For the 1D Burgers PDE experiment (time × space), run separately:
+
+```bash
+python Expts/Burgers_Perturb.py
+python Expts/Burgers_Perturb.py --use-vi --vi-covariance low_rank --vi-rank 8
+# Runtime tuning for heavier optim/langevin runs:
+python Expts/Burgers_Perturb.py --use-langevin --n-samples 2000 --batch-size 400 --langevin-steps 8
+```
+
+The Burgers experiment follows the same initial-condition sampling strategy as
+`Neural_PDE/Numerical_Solvers/Burgers/Data_Gen.py` and caches generated
+trajectories to disk (`Expts/Burgers/data/Burgers_1d_cached.npz`) for reuse.
 
 Each experiment:
 1. Trains a Neural ODE on synthetic trajectories.
@@ -133,13 +198,17 @@ Each experiment:
 4. Inverts bounds using Advanced Perturbation Sampling.
 5. Produces bound comparison plots and empirical coverage curves.
 
-Outputs are saved to `Paper/images/`.
+Outputs are saved to `Expts/Figures/`.
 
 ## Repository Structure
 
 ```
 Expts/                          # Experiment scripts
   experiment_runner.py          # Unified entry point
+  train.py                      # Config-driven toy training runner
+  evaluate.py                   # Config-driven toy evaluation runner
+  pipeline/                     # Shared adapter + IO pipeline
+  configs/                      # YAML configs for train/evaluate
   SHO/                         # Simple Harmonic Oscillator
   DHO/                         # Damped Harmonic Oscillator
   Duffing/                     # Duffing Oscillator

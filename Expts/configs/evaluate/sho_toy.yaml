@@ -1,0 +1,11 @@
+Experiment:
+  task: ode_sho
+
+Run:
+  name: sho_toy
+  folder: Expts/Weights
+  seed: 0
+
+Evaluate:
+  n_solves: 100
+
